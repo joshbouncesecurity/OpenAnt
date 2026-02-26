@@ -85,6 +85,21 @@ Or run the full pipeline in one command:
 openant scan --verify
 ```
 
+### Working with multiple projects
+
+The pipeline operates on one project at a time. Running `openant init` sets the newly initialized project as the active one, so all subsequent commands target it by default.
+
+If you're working with several projects, you have two options:
+
+```bash
+# Option 1: switch the active project
+openant project switch org/repo
+openant parse
+
+# Option 2: target a project directly with -p
+openant parse -p org/repo
+```
+
 ### Project management
 
 ```bash
