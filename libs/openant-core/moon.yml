@@ -1,0 +1,38 @@
+$schema: "https://moonrepo.dev/schemas/project.json"
+
+id: "openant-core"
+type: "library"
+language: "python"
+tags: ["core", "python"]
+
+tasks:
+  # Install dependencies
+  install:
+    command: "pip install -e ."
+    inputs:
+      - "pyproject.toml"
+
+  # Run analysis on a dataset (path-based)
+  analyze:
+    command: "python -m openant analyze"
+    inputs:
+      - "openant/**/*"
+
+  # Parse a repository
+  parse:
+    command: "python -m openant parse"
+    inputs:
+      - "openant/**/*"
+
+  # Generate report
+  report:
+    command: "python -m openant report"
+    inputs:
+      - "openant/**/*"
+
+  # Run tests
+  test:
+    command: "pytest"
+    inputs:
+      - "openant/**/*"
+      - "tests/**/*"

@@ -1,0 +1,91 @@
+package cmd
+
+import (
+	"os"
+
+	"github.com/knostic/open-ant-cli/internal/output"
+	"github.com/knostic/open-ant-cli/internal/python"
+	"github.com/spf13/cobra"
+)
+
+var parseCmd = &cobra.Command{
+	Use:   "parse [repository-path]",
+	Short: "Extract code units from a repository",
+	Long: `Parse extracts analyzable code units from a repository.
+
+The output is a JSON dataset that can be fed into the analyze command.
+Supports Python, JavaScript/TypeScript, Go, and C/C++ repositories.
+
+If no repository path is given, the active project is used (see: openant init).`,
+	Args: cobra.MaximumNArgs(1),
+	Run:  runParse,
+}
+
+var (
+	parseOutput   string
+	parseLanguage string
+	parseLevel    string
+)
+
+func init() {
+	parseCmd.Flags().StringVarP(&parseOutput, "output", "o", "", "Output directory (default: project scan dir)")
+	parseCmd.Flags().StringVarP(&parseLanguage, "language", "l", "", "Language: python, javascript, go, c, auto")
+	parseCmd.Flags().StringVar(&parseLevel, "level", "all", "Processing level: all, reachable, codeql, exploitable")
+}
+
+func runParse(cmd *cobra.Command, args []string) {
+	repoPath, ctx, err := resolveRepoArg(args)
+	if err != nil {
+		output.PrintError(err.Error())
+		os.Exit(2)
+	}
+
+	// Apply project defaults
+	if ctx != nil {
+		if parseOutput == "" {
+			parseOutput = ctx.ScanDir
+		}
+		if parseLanguage == "" {
+			parseLanguage = ctx.Language
+		}
+	}
+	if parseLanguage == "" {
+		parseLanguage = "auto"
+	}
+	if parseOutput == "" {
+		output.PrintError("--output is required (or use openant init to set up a project)")
+		os.Exit(2)
+	}
+
+	rt, err := ensurePython()
+	if err != nil {
+		output.PrintError(err.Error())
+		os.Exit(2)
+	}
+
+	pyArgs := []string{"parse", repoPath, "--output", parseOutput}
+	if parseLanguage != "auto" {
+		pyArgs = append(pyArgs, "--language", parseLanguage)
+	}
+	if parseLevel != "all" {
+		pyArgs = append(pyArgs, "--level", parseLevel)
+	}
+
+	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, resolvedAPIKey())
+	if err != nil {
+		output.PrintError(err.Error())
+		os.Exit(2)
+	}
+
+	if jsonOutput {
+		output.PrintJSON(result.Envelope)
+	} else if result.Envelope.Status == "success" {
+		if data, ok := result.Envelope.Data.(map[string]any); ok {
+			output.PrintParseSummary(data)
+		}
+	} else {
+		output.PrintErrors(result.Envelope.Errors)
+	}
+
+	os.Exit(result.ExitCode)
+}

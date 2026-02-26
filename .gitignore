@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+*.pyo
+.env
+.venv/
+node_modules/
+apps/openant-cli/bin/

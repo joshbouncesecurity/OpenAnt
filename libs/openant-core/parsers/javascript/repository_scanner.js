@@ -1,0 +1,256 @@
+#!/usr/bin/env node
+/**
+ * Repository Scanner
+ *
+ * Enumerates ALL source files in a repository for complete coverage.
+ * This is Phase 1 of the parser upgrade to achieve full repository coverage.
+ *
+ * Usage:
+ *   node repository_scanner.js <repo_path> [--output <file>] [--exclude <patterns>]
+ *
+ * Output (JSON):
+ *   {
+ *     "repository": "/path/to/repo",
+ *     "scan_time": "2025-12-23T...",
+ *     "files": [
+ *       { "path": "relative/path/to/file.ts", "size": 1234, "extension": ".ts" }
+ *     ],
+ *     "statistics": {
+ *       "total_files": 150,
+ *       "by_extension": { ".ts": 100, ".js": 50 },
+ *       "total_size_bytes": 500000,
+ *       "directories_scanned": 25,
+ *       "directories_excluded": 10
+ *     }
+ *   }
+ */
+
+const fs = require('fs');
+const path = require('path');
+
+class RepositoryScanner {
+    constructor(repoPath, options = {}) {
+        this.repoPath = path.resolve(repoPath);
+
+        // Default exclude patterns
+        this.excludePatterns = options.excludePatterns || [
+            'node_modules',
+            'dist',
+            'build',
+            'coverage',
+            '.git',
+            '.svn',
+            '.hg',
+            '__pycache__',
+            '.next',
+            '.nuxt',
+            'out',
+            '.cache',
+            'tmp',
+            'temp',
+            '.turbo',
+            '.vercel',
+            '.netlify'
+        ];
+
+        // Source file extensions to include
+        this.sourceExtensions = options.sourceExtensions || [
+            '.js',
+            '.ts',
+            '.jsx',
+            '.tsx',
+            '.mjs',
+            '.cjs'
+        ];
+
+        // Statistics
+        this.stats = {
+            totalFiles: 0,
+            byExtension: {},
+            totalSizeBytes: 0,
+            directoriesScanned: 0,
+            directoriesExcluded: 0
+        };
+
+        // Results
+        this.files = [];
+    }
+
+    /**
+     * Check if a directory should be excluded
+     */
+    shouldExcludeDirectory(dirName) {
+        return this.excludePatterns.some(pattern => {
+            // Exact match
+            if (dirName === pattern) return true;
+            // Glob-like match (e.g., pattern ends with *)
+            if (pattern.endsWith('*') && dirName.startsWith(pattern.slice(0, -1))) return true;
+            return false;
+        });
+    }
+
+    /**
+     * Check if a file is a source file we want to include
+     */
+    isSourceFile(fileName) {
+        const ext = path.extname(fileName).toLowerCase();
+        return this.sourceExtensions.includes(ext);
+    }
+
+    /**
+     * Recursively scan a directory
+     */
+    scanDirectory(dirPath, relativePath = '') {
+        this.stats.directoriesScanned++;
+
+        let entries;
+        try {
+            entries = fs.readdirSync(dirPath, { withFileTypes: true });
+        } catch (error) {
+            // Permission denied or other error
+            console.error(`Warning: Cannot read directory ${dirPath}: ${error.message}`);
+            return;
+        }
+
+        for (const entry of entries) {
+            const fullPath = path.join(dirPath, entry.name);
+            const entryRelativePath = relativePath ? path.join(relativePath, entry.name) : entry.name;
+
+            if (entry.isDirectory()) {
+                if (this.shouldExcludeDirectory(entry.name)) {
+                    this.stats.directoriesExcluded++;
+                    continue;
+                }
+                // Recurse into subdirectory
+                this.scanDirectory(fullPath, entryRelativePath);
+            } else if (entry.isFile()) {
+                if (this.isSourceFile(entry.name)) {
+                    // Get file stats
+                    let fileStats;
+                    try {
+                        fileStats = fs.statSync(fullPath);
+                    } catch (error) {
+                        console.error(`Warning: Cannot stat file ${fullPath}: ${error.message}`);
+                        continue;
+                    }
+
+                    const ext = path.extname(entry.name).toLowerCase();
+
+                    // Add to results
+                    this.files.push({
+                        path: entryRelativePath,
+                        size: fileStats.size,
+                        extension: ext
+                    });
+
+                    // Update statistics
+                    this.stats.totalFiles++;
+                    this.stats.totalSizeBytes += fileStats.size;
+                    this.stats.byExtension[ext] = (this.stats.byExtension[ext] || 0) + 1;
+                }
+            }
+        }
+    }
+
+    /**
+     * Run the scan and return results
+     */
+    scan() {
+        if (!fs.existsSync(this.repoPath)) {
+            throw new Error(`Repository path does not exist: ${this.repoPath}`);
+        }
+
+        if (!fs.statSync(this.repoPath).isDirectory()) {
+            throw new Error(`Repository path is not a directory: ${this.repoPath}`);
+        }
+
+        // Reset state
+        this.files = [];
+        this.stats = {
+            totalFiles: 0,
+            byExtension: {},
+            totalSizeBytes: 0,
+            directoriesScanned: 0,
+            directoriesExcluded: 0
+        };
+
+        // Run scan
+        this.scanDirectory(this.repoPath);
+
+        // Sort files by path for consistent output
+        this.files.sort((a, b) => a.path.localeCompare(b.path));
+
+        return {
+            repository: this.repoPath,
+            scan_time: new Date().toISOString(),
+            files: this.files,
+            statistics: this.stats
+        };
+    }
+}
+
+// CLI interface
+if (require.main === module) {
+    const args = process.argv.slice(2);
+
+    if (args.length < 1) {
+        console.error('Usage: node repository_scanner.js <repo_path> [--output <file>] [--exclude <pattern1,pattern2,...>]');
+        console.error('');
+        console.error('Options:');
+        console.error('  --output <file>     Write results to file instead of stdout');
+        console.error('  --exclude <patterns> Additional comma-separated exclude patterns');
+        console.error('');
+        console.error('Example:');
+        console.error('  node repository_scanner.js /path/to/repo --output scan_results.json');
+        process.exit(1);
+    }
+
+    const repoPath = args[0];
+    let outputFile = null;
+    let additionalExcludes = [];
+
+    // Parse arguments
+    for (let i = 1; i < args.length; i++) {
+        if (args[i] === '--output' && args[i + 1]) {
+            outputFile = args[i + 1];
+            i++;
+        } else if (args[i] === '--exclude' && args[i + 1]) {
+            additionalExcludes = args[i + 1].split(',').map(s => s.trim());
+            i++;
+        }
+    }
+
+    try {
+        const options = {};
+        if (additionalExcludes.length > 0) {
+            // Merge with default excludes
+            const defaultExcludes = [
+                'node_modules', 'dist', 'build', 'coverage', '.git', '.svn', '.hg',
+                '__pycache__', '.next', '.nuxt', 'out', '.cache', 'tmp', 'temp',
+                '.turbo', '.vercel', '.netlify'
+            ];
+            options.excludePatterns = [...defaultExcludes, ...additionalExcludes];
+        }
+
+        const scanner = new RepositoryScanner(repoPath, options);
+        const result = scanner.scan();
+
+        const output = JSON.stringify(result, null, 2);
+
+        if (outputFile) {
+            fs.writeFileSync(outputFile, output);
+            console.error(`Scan complete. Results written to: ${outputFile}`);
+            console.error(`Total files found: ${result.statistics.totalFiles}`);
+            console.error(`By extension:`, result.statistics.byExtension);
+        } else {
+            console.log(output);
+        }
+
+        process.exit(0);
+    } catch (error) {
+        console.error(`Error: ${error.message}`);
+        process.exit(1);
+    }
+}
+
+module.exports = { RepositoryScanner };
