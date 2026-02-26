@@ -81,7 +81,7 @@ func runProjectShow(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	scanDir, _ := config.ScanDir(project.Name, project.CommitSHAShort)
+	scanDir, _ := config.ScanDir(project.Name, project.CommitSHAShort, project.Language)
 	projDir, _ := config.ProjectDir(project.Name)
 
 	output.PrintHeader("Active Project")

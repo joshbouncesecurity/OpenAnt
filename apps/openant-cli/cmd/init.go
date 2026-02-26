@@ -151,7 +151,7 @@ func runInit(cmd *cobra.Command, args []string) {
 	}
 
 	// Create scan directory
-	scanDir, err := config.ScanDir(name, project.CommitSHAShort)
+	scanDir, err := config.ScanDir(name, project.CommitSHAShort, initLanguage)
 	if err != nil {
 		output.PrintError(err.Error())
 		os.Exit(1)

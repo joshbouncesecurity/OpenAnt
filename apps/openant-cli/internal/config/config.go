@@ -159,14 +159,14 @@ func ProjectDir(name string) (string, error) {
 	return filepath.Join(projDir, name), nil
 }
 
-// ScanDir returns the scan directory for a specific project and commit SHA.
-// ~/.openant/projects/org/repo/scans/{shortSHA}/
-func ScanDir(projectName, shortSHA string) (string, error) {
+// ScanDir returns the scan directory for a specific project, commit SHA, and language.
+// ~/.openant/projects/org/repo/scans/{shortSHA}/{language}/
+func ScanDir(projectName, shortSHA, language string) (string, error) {
 	projDir, err := ProjectDir(projectName)
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(projDir, "scans", shortSHA), nil
+	return filepath.Join(projDir, "scans", shortSHA, language), nil
 }
 
 // MaskKey returns a masked version of an API key for display.

@@ -35,7 +35,7 @@ func resolveProject() (*projectContext, error) {
 		}
 	}
 
-	scanDir, err := config.ScanDir(project.Name, project.CommitSHAShort)
+	scanDir, err := config.ScanDir(project.Name, project.CommitSHAShort, project.Language)
 	if err != nil {
 		return nil, err
 	}
