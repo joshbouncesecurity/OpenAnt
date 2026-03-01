@@ -42,7 +42,7 @@ var (
 
 func init() {
 	scanCmd.Flags().StringVarP(&scanOutput, "output", "o", "", "Output directory (default: project scan dir or temp dir)")
-	scanCmd.Flags().StringVarP(&scanLanguage, "language", "l", "", "Language: python, javascript, go, c, auto")
+	scanCmd.Flags().StringVarP(&scanLanguage, "language", "l", "", "Language: python, javascript, go, c, ruby, php, auto")
 	scanCmd.Flags().StringVar(&scanLevel, "level", "reachable", "Processing level: all, reachable, codeql, exploitable")
 	scanCmd.Flags().BoolVar(&scanVerify, "verify", false, "Enable Stage 2 attacker simulation")
 	scanCmd.Flags().BoolVar(&scanNoContext, "no-context", false, "Skip application context generation")

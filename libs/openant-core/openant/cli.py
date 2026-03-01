@@ -3,14 +3,14 @@
 OpenAnt CLI — Unified command-line interface for vulnerability analysis.
 
 Commands:
-    open-ant scan /path/to/repo --output /tmp/results
-    open-ant parse /path/to/repo --output /tmp/results
-    open-ant enhance dataset.json --analyzer-output ao.json --repo-path /repo -o enhanced.json
-    open-ant analyze dataset.json --output /tmp/results
-    open-ant verify results.json --analyzer-output ao.json --output /tmp/results
-    open-ant build-output results.json -o pipeline_output.json
-    open-ant dynamic-test pipeline_output.json -o /tmp/dt/
-    open-ant report results.json --format html --output report.html
+    openant scan /path/to/repo --output /tmp/results
+    openant parse /path/to/repo --output /tmp/results
+    openant enhance dataset.json --analyzer-output ao.json --repo-path /repo -o enhanced.json
+    openant analyze dataset.json --output /tmp/results
+    openant verify results.json --analyzer-output ao.json --output /tmp/results
+    openant build-output results.json -o pipeline_output.json
+    openant dynamic-test pipeline_output.json -o /tmp/dt/
+    openant report results.json --format html --output report.html
 
 All commands output JSON to stdout and logs to stderr.
 Exit codes: 0 = clean, 1 = vulnerabilities found, 2 = error.
@@ -440,7 +440,7 @@ def cmd_report(args):
 
 def main():
     parser = argparse.ArgumentParser(
-        prog="open-ant",
+        prog="openant",
         description="Two-stage SAST tool using Claude for vulnerability analysis",
     )
     parser.add_argument(
@@ -461,7 +461,7 @@ def main():
     scan_p.add_argument("--output", "-o", help="Output directory (default: temp dir)")
     scan_p.add_argument(
         "--language", "-l",
-        choices=["auto", "python", "javascript", "go", "c"],
+        choices=["auto", "python", "javascript", "go", "c", "ruby", "php"],
         default="auto",
         help="Language (default: auto-detect)",
     )
@@ -496,7 +496,7 @@ def main():
     parse_p.add_argument("--output", "-o", help="Output directory (default: temp dir)")
     parse_p.add_argument(
         "--language", "-l",
-        choices=["auto", "python", "javascript", "go", "c"],
+        choices=["auto", "python", "javascript", "go", "c", "ruby", "php"],
         default="auto",
         help="Language (default: auto-detect)",
     )

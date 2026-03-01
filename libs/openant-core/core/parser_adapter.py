@@ -1,8 +1,9 @@
 """
 Unified parser interface.
 
-Wraps the three existing parsers (Python, JavaScript, Go) with a single
-function signature that accepts a repo path and returns dataset + analyzer output.
+Wraps language-specific parsers (Python, JavaScript, Go, C, Ruby, PHP) with
+a single function signature that accepts a repo path and returns dataset +
+analyzer output.
 
 Each parser is invoked as a subprocess to avoid import conflicts with
 sys.path hacks in the original code.
@@ -29,7 +30,7 @@ def detect_language(repo_path: str) -> str:
         "python", "javascript", or "go"
     """
     repo = Path(repo_path)
-    counts = {"python": 0, "javascript": 0, "go": 0, "c": 0}
+    counts = {"python": 0, "javascript": 0, "go": 0, "c": 0, "ruby": 0, "php": 0}
 
     for f in repo.rglob("*"):
         if not f.is_file():
@@ -51,10 +52,15 @@ def detect_language(repo_path: str) -> str:
             counts["go"] += 1
         elif suffix in (".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".hh"):
             counts["c"] += 1
+        elif suffix in (".rb", ".rake"):
+            counts["ruby"] += 1
+        elif suffix == ".php":
+            counts["php"] += 1
 
     if not any(counts.values()):
         raise ValueError(
-            f"No Python, JavaScript, Go, or C/C++ source files found in {repo_path}"
+            f"No supported source files found in {repo_path}. "
+            "Supported languages: Python, JavaScript/TypeScript, Go, C/C++, Ruby, PHP."
         )
 
     return max(counts, key=counts.get)
@@ -99,11 +105,15 @@ def parse_repository(
     if language == "python":
         return _parse_python(repo_path, output_dir, processing_level, skip_tests)
     elif language == "javascript":
-        return _parse_javascript(repo_path, output_dir, processing_level)
+        return _parse_javascript(repo_path, output_dir, processing_level, skip_tests)
     elif language == "go":
-        return _parse_go(repo_path, output_dir, processing_level)
+        return _parse_go(repo_path, output_dir, processing_level, skip_tests)
     elif language == "c":
         return _parse_c(repo_path, output_dir, processing_level, skip_tests)
+    elif language == "ruby":
+        return _parse_ruby(repo_path, output_dir, processing_level, skip_tests)
+    elif language == "php":
+        return _parse_php(repo_path, output_dir, processing_level, skip_tests)
     else:
         raise ValueError(f"Unsupported language: {language}")
 
@@ -183,10 +193,18 @@ def _apply_reachability_filter(
     )
     reachable_ids = reachability.get_all_reachable()
 
-    # Filter dataset units
+    # Filter dataset units and stamp reachability tags
     units = dataset.get("units", [])
     original_count = len(units)
-    filtered_units = [u for u in units if u.get("id") in reachable_ids]
+    filtered_units = []
+    for u in units:
+        unit_id = u.get("id", "")
+        if unit_id in reachable_ids:
+            u["reachable"] = True
+            u["is_entry_point"] = unit_id in entry_points
+            if unit_id in entry_points:
+                u["entry_point_reason"] = detector.get_entry_point_reason(unit_id)
+            filtered_units.append(u)
 
     dataset["units"] = filtered_units
 
@@ -285,7 +303,7 @@ def _parse_python(repo_path: str, output_dir: str, processing_level: str, skip_t
 # JavaScript/TypeScript parser
 # ---------------------------------------------------------------------------
 
-def _parse_javascript(repo_path: str, output_dir: str, processing_level: str) -> ParseResult:
+def _parse_javascript(repo_path: str, output_dir: str, processing_level: str, skip_tests: bool = True) -> ParseResult:
     """Invoke the JavaScript/TypeScript parser.
 
     The JS parser is a PipelineTest class that runs Node.js subprocesses.
@@ -295,11 +313,7 @@ def _parse_javascript(repo_path: str, output_dir: str, processing_level: str) ->
 
     parser_script = _CORE_ROOT / "parsers" / "javascript" / "test_pipeline.py"
 
-    # The JS parser requires --analyzer-path pointing to typescript_analyzer.js
-    # For now, look for it relative to the parser dir
-    analyzer_js = _CORE_ROOT / "parsers" / "javascript" / "typescript_analyzer.js"
-
-    # Build command
+    # Build command — analyzer-path now defaults to co-located file in the parser
     cmd = [
         sys.executable, str(parser_script),
         repo_path,
@@ -307,18 +321,8 @@ def _parse_javascript(repo_path: str, output_dir: str, processing_level: str) ->
         "--processing-level", processing_level,
     ]
 
-    # Only add --analyzer-path if the file exists
-    if analyzer_js.exists():
-        cmd.extend(["--analyzer-path", str(analyzer_js)])
-    else:
-        # Try to find it in common locations
-        # The analyzer may be external — user needs to provide it
-        raise RuntimeError(
-            f"TypeScript analyzer not found at {analyzer_js}. "
-            "The JavaScript parser requires a TypeScript analyzer binary. "
-            "Pass --analyzer-path to the JS parser or place typescript_analyzer.js "
-            "in parsers/javascript/."
-        )
+    if skip_tests:
+        cmd.append("--skip-tests")
 
     result = subprocess.run(
         cmd,
@@ -355,7 +359,7 @@ def _parse_javascript(repo_path: str, output_dir: str, processing_level: str) ->
 # Go parser
 # ---------------------------------------------------------------------------
 
-def _parse_go(repo_path: str, output_dir: str, processing_level: str) -> ParseResult:
+def _parse_go(repo_path: str, output_dir: str, processing_level: str, skip_tests: bool = True) -> ParseResult:
     """Invoke the Go parser.
 
     The Go parser is a PipelineTest class that calls a compiled Go binary.
@@ -371,6 +375,9 @@ def _parse_go(repo_path: str, output_dir: str, processing_level: str) -> ParseRe
         "--output", output_dir,
         "--processing-level", processing_level,
     ]
+
+    if skip_tests:
+        cmd.append("--skip-tests")
 
     result = subprocess.run(
         cmd,
@@ -457,5 +464,121 @@ def _parse_c(repo_path: str, output_dir: str, processing_level: str, skip_tests:
         analyzer_output_path=analyzer_output_path if os.path.exists(analyzer_output_path) else None,
         units_count=units_count,
         language="c",
+        processing_level=processing_level,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Ruby parser
+# ---------------------------------------------------------------------------
+
+def _parse_ruby(repo_path: str, output_dir: str, processing_level: str, skip_tests: bool = True) -> ParseResult:
+    """Invoke the Ruby parser.
+
+    The Ruby parser uses tree-sitter for function extraction and call graph
+    building.  Invoked via subprocess (same pattern as other parsers).
+
+    Requires: tree-sitter, tree-sitter-ruby
+    """
+    print("[Parser] Running Ruby parser...", file=sys.stderr)
+
+    parser_script = _CORE_ROOT / "parsers" / "ruby" / "test_pipeline.py"
+
+    cmd = [
+        sys.executable, str(parser_script),
+        repo_path,
+        "--output", output_dir,
+        "--processing-level", processing_level,
+    ]
+
+    if skip_tests:
+        cmd.append("--skip-tests")
+
+    result = subprocess.run(
+        cmd,
+        stdout=sys.stderr,
+        stderr=sys.stderr,
+        cwd=str(_CORE_ROOT),
+        timeout=1800,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Ruby parser failed with exit code {result.returncode}")
+
+    dataset_path = os.path.join(output_dir, "dataset.json")
+    analyzer_output_path = os.path.join(output_dir, "analyzer_output.json")
+
+    # Count units
+    units_count = 0
+    if os.path.exists(dataset_path):
+        with open(dataset_path) as f:
+            data = json.load(f)
+        units_count = len(data.get("units", []))
+
+    print(f"  Ruby parser complete: {units_count} units", file=sys.stderr)
+
+    return ParseResult(
+        dataset_path=dataset_path,
+        analyzer_output_path=analyzer_output_path if os.path.exists(analyzer_output_path) else None,
+        units_count=units_count,
+        language="ruby",
+        processing_level=processing_level,
+    )
+
+
+# ---------------------------------------------------------------------------
+# PHP parser
+# ---------------------------------------------------------------------------
+
+def _parse_php(repo_path: str, output_dir: str, processing_level: str, skip_tests: bool = True) -> ParseResult:
+    """Invoke the PHP parser.
+
+    The PHP parser uses tree-sitter for function extraction and call graph
+    building.  Invoked via subprocess (same pattern as other parsers).
+
+    Requires: tree-sitter, tree-sitter-php
+    """
+    print("[Parser] Running PHP parser...", file=sys.stderr)
+
+    parser_script = _CORE_ROOT / "parsers" / "php" / "test_pipeline.py"
+
+    cmd = [
+        sys.executable, str(parser_script),
+        repo_path,
+        "--output", output_dir,
+        "--processing-level", processing_level,
+    ]
+
+    if skip_tests:
+        cmd.append("--skip-tests")
+
+    result = subprocess.run(
+        cmd,
+        stdout=sys.stderr,
+        stderr=sys.stderr,
+        cwd=str(_CORE_ROOT),
+        timeout=1800,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"PHP parser failed with exit code {result.returncode}")
+
+    dataset_path = os.path.join(output_dir, "dataset.json")
+    analyzer_output_path = os.path.join(output_dir, "analyzer_output.json")
+
+    # Count units
+    units_count = 0
+    if os.path.exists(dataset_path):
+        with open(dataset_path) as f:
+            data = json.load(f)
+        units_count = len(data.get("units", []))
+
+    print(f"  PHP parser complete: {units_count} units", file=sys.stderr)
+
+    return ParseResult(
+        dataset_path=dataset_path,
+        analyzer_output_path=analyzer_output_path if os.path.exists(analyzer_output_path) else None,
+        units_count=units_count,
+        language="php",
         processing_level=processing_level,
     )
