@@ -34,7 +34,7 @@ Research: [Nahum Korda](https://github.com/NahumKorda/).
 
 Productization: Alex Raihelgaus, Daniel Geyshis.
 
-With thanks to: [Michal Kamensky](https://github.com/kamenskymic/), Imri Goldberg, [Gadi Evron](https://github.com/gadievron/), Daniel Cuthbert. Josh Grossman, and Avi Douglen.
+With thanks to: [Michal Kamensky](https://github.com/kamenskymic/), [Imri Goldberg](https://github.com/lorg), [Gadi Evron](https://github.com/gadievron/), Daniel Cuthbert. Josh Grossman, and Avi Douglen.
 
 ## Check out Knostic
 **If you like our work**, check out what we do at [Knostic](https://knostic.ai) to defend your agents and coding assistants, prevent them from deleting your hard drive and code, and control associated supply chain risks such as MCP servers, extensions, and skills.
