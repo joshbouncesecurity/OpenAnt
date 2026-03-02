@@ -6,7 +6,7 @@
 
 [OpenAnt](https://knostic.ai/openant) from [Knostic](https://knostic.ai) is an open source LLM-based vulnerability discovery product that helps defenders proactively find verified security flaws while minimizing both false positives and false negatives. Stage 1 detects. Stage 2 attacks. What survives is real.
 
-We're pretty proud of this product and are in the disclosure process for its findings, but do keep in mind that this started as a research project and some of the features still in beta, and we welcome contributions to make it better.
+We're pretty proud of this product and are in the vulnerability disclosure process for its findings, but do keep in mind that this started as a research project, and some of its features are still in beta. We welcome contributions to make it better.
 
 ## Why open source?
 Considering the explosion of AI-discovered vulnerabilities, we hope OpenAnt will be the tool helping open source maintainers stay ahead of attackers, where they can use it themselves or submit their repo for scanning at no cost.
@@ -30,11 +30,11 @@ To submit your repo for scanning:
 - Ruby (beta)
 
 ## Credits
-Research: Nahum Korda.
+Research: [Nahum Korda](https://github.com/NahumKorda/).
 
 Productization: Alex Raihelgaus, Daniel Geyshis.
 
-With thanks to: Michal Kamensky, Imri Goldberg, Gadi Evron, Daniel Cuthbert. Josh Grossman, and Avi Douglen.
+With thanks to: [Michal Kamensky](https://github.com/kamenskymic/), Imri Goldberg, [Gadi Evron](https://github.com/gadievron/), Daniel Cuthbert. Josh Grossman, and Avi Douglen.
 
 ## Check out Knostic
 **If you like our work**, check out what we do at [Knostic](https://knostic.ai) to defend your agents and coding assistants, prevent them from deleting your hard drive and code, and control associated supply chain risks such as MCP servers, extensions, and skills.
