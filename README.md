@@ -16,8 +16,10 @@ Besides, you may have heard about Aardvark from OpenAI (now Codex Security) and 
 
 ## Technical details and free scanning for open source projects
 For technical details, limitations, and token costs, check out this blog post:
+[https://knostic.ai/blog/openant](https://knostic.ai/blog/openant)
 
 To submit your repo for scanning:
+[https://knostic.ai/blog/oss-scan](https://knostic.ai/blog/oss-scan)
 
 ## Supported languages
 - Go
