@@ -27,7 +27,7 @@ To submit your repo for scanning:
 - PHP (beta)
 - Ruby (beta)
 
-## Credit
+## Credits
 Research: Nahum Korda.
 
 Productization: Alex Raihelgaus, Daniel Geyshis.
