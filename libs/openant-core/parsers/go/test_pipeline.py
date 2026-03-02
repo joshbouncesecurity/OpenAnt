@@ -68,7 +68,9 @@ class GoPipelineTest:
         enable_llm: bool = False,
         agentic: bool = False,
         processing_level: ProcessingLevel = ProcessingLevel.ALL,
-        skip_tests: bool = False
+        skip_tests: bool = False,
+        depth: int = 3,
+        name: str = None
     ):
         self.repo_path = os.path.abspath(repo_path)
         self.output_dir = output_dir or os.path.join(os.path.dirname(__file__), 'test_output')
@@ -77,6 +79,8 @@ class GoPipelineTest:
         self.agentic = agentic
         self.processing_level = processing_level
         self.skip_tests = skip_tests
+        self.depth = depth
+        self.dataset_name = name
 
         # Go parser binary location
         self.go_parser = os.path.join(self.parser_dir, 'go_parser', 'go_parser')
@@ -230,10 +234,23 @@ class GoPipelineTest:
         command = [self.go_parser, 'all', '--output', self.dataset_file]
         if self.skip_tests:
             command.append('--skip-tests')
+        if self.depth != 3:
+            command.extend(['--depth', str(self.depth)])
         command.extend(['--analyzer-output', self.analyzer_output_file])
         command.append(self.repo_path)
 
         result = self.run_stage('go_all', command, self.dataset_file)
+
+        # Post-process: apply dataset name if specified (Go binary doesn't support --name)
+        if result.get('success', False) and self.dataset_name and os.path.exists(self.dataset_file):
+            try:
+                with open(self.dataset_file, 'r') as f:
+                    dataset = json.load(f)
+                dataset['name'] = self.dataset_name
+                with open(self.dataset_file, 'w') as f:
+                    json.dump(dataset, f, indent=2)
+            except Exception as e:
+                print(f"Warning: Could not apply dataset name: {e}")
 
         self.results['stages']['go_parser'] = result
         return result.get('success', False)
@@ -319,8 +336,16 @@ class GoPipelineTest:
             units = dataset.get("units", [])
             original_count = len(units)
 
-            # Filter to reachable units
-            filtered_units = [u for u in units if u.get("id") in self.reachable_units]
+            # Filter to reachable units and stamp reachability tags
+            filtered_units = []
+            for u in units:
+                unit_id = u.get("id", "")
+                if unit_id in self.reachable_units:
+                    u["reachable"] = True
+                    u["is_entry_point"] = unit_id in self.entry_points
+                    if unit_id in self.entry_points:
+                        u["entry_point_reason"] = detector.get_entry_point_reason(unit_id)
+                    filtered_units.append(u)
 
             # Update dataset
             dataset["units"] = filtered_units
@@ -1055,6 +1080,17 @@ Examples:
         action='store_true',
         help='Skip test files (*_test.go)'
     )
+    parser.add_argument(
+        '--depth', '-d',
+        type=int,
+        default=3,
+        help='Max dependency resolution depth (default: 3)'
+    )
+    parser.add_argument(
+        '--name', '-n',
+        default=None,
+        help='Dataset name (default: derived from repo path)'
+    )
 
     args = parser.parse_args()
 
@@ -1075,7 +1111,9 @@ Examples:
         enable_llm=args.llm,
         agentic=args.agentic,
         processing_level=processing_level,
-        skip_tests=args.skip_tests
+        skip_tests=args.skip_tests,
+        depth=args.depth,
+        name=args.name
     )
     results = pipeline.run_full_pipeline()
 

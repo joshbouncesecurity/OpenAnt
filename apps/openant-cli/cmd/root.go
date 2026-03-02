@@ -89,5 +89,6 @@ func init() {
 	rootCmd.AddCommand(projectCmd)
 	rootCmd.AddCommand(configCmd)
 	rootCmd.AddCommand(setAPIKeyCmd)
+	rootCmd.AddCommand(uninstallCmd)
 	rootCmd.AddCommand(versionCmd)
 }

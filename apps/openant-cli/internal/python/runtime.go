@@ -224,6 +224,14 @@ func installOpenant(pythonPath, corePath string) error {
 	return cmd.Run()
 }
 
+// PipUninstall returns an *exec.Cmd that runs `python -m pip uninstall openant -y`.
+func PipUninstall(pythonPath string) *exec.Cmd {
+	cmd := exec.Command(pythonPath, "-m", "pip", "uninstall", "openant", "-y")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	return cmd
+}
+
 // findOpenantCore locates the libs/openant-core directory by checking:
 //  1. Relative to the running executable (walk up looking for libs/openant-core/pyproject.toml)
 //  2. Relative to the current working directory

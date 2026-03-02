@@ -10,7 +10,7 @@ Tests the parser pipeline components:
 5. ContextEnhancer (optional) - LLM enhancement using Claude Sonnet
 
 Usage:
-    python test_pipeline.py <repo_path> --analyzer-path <path> [--output <dir>] [--llm] [--agentic] [--processing-level LEVEL]
+    python test_pipeline.py <repo_path> [--output <dir>] [--llm] [--agentic] [--processing-level LEVEL]
 
 Processing Levels (cumulative filtering):
     Level 1: all         - Process all units (no filtering)
@@ -20,16 +20,16 @@ Processing Levels (cumulative filtering):
 
 Example:
     # Static analysis only
-    python test_pipeline.py /path/to/repo --analyzer-path /path/to/typescript_analyzer.js --output /tmp/output
+    python test_pipeline.py /path/to/repo --output /tmp/output
 
     # With agentic LLM enhancement
-    python test_pipeline.py /path/to/repo --analyzer-path /path/to/typescript_analyzer.js --output /tmp/output --llm --agentic
+    python test_pipeline.py /path/to/repo --output /tmp/output --llm --agentic
 
     # CodeQL pre-filter + agentic classification
-    python test_pipeline.py /path/to/repo --analyzer-path /path/to/typescript_analyzer.js --output /tmp/output --llm --agentic --processing-level codeql
+    python test_pipeline.py /path/to/repo --output /tmp/output --llm --agentic --processing-level codeql
 
     # Maximum cost savings: only exploitable units
-    python test_pipeline.py /path/to/repo --analyzer-path /path/to/typescript_analyzer.js --output /tmp/output --llm --agentic --processing-level exploitable
+    python test_pipeline.py /path/to/repo --output /tmp/output --llm --agentic --processing-level exploitable
 """
 
 import argparse
@@ -67,7 +67,10 @@ class PipelineTest:
         enable_llm: bool = False,
         agentic: bool = False,
         analyzer_path: str = None,
-        processing_level: ProcessingLevel = ProcessingLevel.ALL
+        processing_level: ProcessingLevel = ProcessingLevel.ALL,
+        skip_tests: bool = False,
+        depth: int = 3,
+        name: str = None
     ):
         self.repo_path = os.path.abspath(repo_path)
         self.output_dir = output_dir or os.path.join(os.path.dirname(__file__), 'test_output')
@@ -75,6 +78,9 @@ class PipelineTest:
         self.enable_llm = enable_llm
         self.agentic = agentic
         self.processing_level = processing_level
+        self.skip_tests = skip_tests
+        self.depth = depth
+        self.dataset_name = name
 
         # Component locations
         # repository_scanner.js and unit_generator.js are in this package
@@ -217,9 +223,13 @@ class PipelineTest:
         """Stage 1: Scan repository for source files."""
         self.scan_results_file = os.path.join(self.output_dir, 'scan_results.json')
 
+        command = ['node', self.repository_scanner, self.repo_path, '--output', self.scan_results_file]
+        if self.skip_tests:
+            command.append('--skip-tests')
+
         result = self.run_stage(
             'repository_scanner',
-            ['node', self.repository_scanner, self.repo_path, '--output', self.scan_results_file],
+            command,
             self.scan_results_file
         )
 
@@ -350,9 +360,15 @@ class PipelineTest:
 
         self.dataset_file = os.path.join(self.output_dir, 'dataset.json')
 
+        command = ['node', self.unit_generator, self.analyzer_output_file, '--output', self.dataset_file]
+        if self.depth != 3:
+            command.extend(['--depth', str(self.depth)])
+        if self.dataset_name:
+            command.extend(['--name', self.dataset_name])
+
         result = self.run_stage(
             'unit_generator',
-            ['node', self.unit_generator, self.analyzer_output_file, '--output', self.dataset_file],
+            command,
             self.dataset_file
         )
 
@@ -500,8 +516,16 @@ class PipelineTest:
             units = dataset.get("units", [])
             original_count = len(units)
 
-            # Filter to reachable units
-            filtered_units = [u for u in units if u.get("id") in self.reachable_units]
+            # Filter to reachable units and stamp reachability tags
+            filtered_units = []
+            for u in units:
+                unit_id = u.get("id", "")
+                if unit_id in self.reachable_units:
+                    u["reachable"] = True
+                    u["is_entry_point"] = unit_id in self.entry_points
+                    if unit_id in self.entry_points:
+                        u["entry_point_reason"] = detector.get_entry_point_reason(unit_id)
+                    filtered_units.append(u)
 
             # Update dataset
             dataset["units"] = filtered_units
@@ -1150,7 +1174,7 @@ def main():
     IDE_MODE = False  # Set to True to use hardcoded values below
     HARDCODED_REPO_PATH = '/Users/nahumkorda/code/test_repos/Flowise/packages/components'
     HARDCODED_OUTPUT_DIR = '/Users/nahumkorda/code/openant/datasets/flowise'
-    HARDCODED_ANALYZER_PATH = '/Users/nahumkorda/code/Hyperion/sast/ast_parser/typescript_analyzer.js'
+    HARDCODED_ANALYZER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'typescript_analyzer.js')
     HARDCODED_ENABLE_LLM = True
     HARDCODED_AGENTIC = True
     HARDCODED_PROCESSING_LEVEL = ProcessingLevel.EXPLOITABLE  # all, reachable, codeql, or exploitable
@@ -1163,6 +1187,9 @@ def main():
         enable_llm = HARDCODED_ENABLE_LLM
         agentic = HARDCODED_AGENTIC
         processing_level = HARDCODED_PROCESSING_LEVEL
+        skip_tests = False
+        depth = 3
+        name = None
     else:
         parser = argparse.ArgumentParser(
             description='Test the parser pipeline on a repository',
@@ -1176,16 +1203,16 @@ Processing Levels (cumulative filtering):
 
 Examples:
   # Static analysis only (all units)
-  python test_pipeline.py /path/to/repo --analyzer-path analyzer.js
+  python test_pipeline.py /path/to/repo
 
   # With reachability filtering only
-  python test_pipeline.py /path/to/repo --analyzer-path analyzer.js --processing-level reachable
+  python test_pipeline.py /path/to/repo --processing-level reachable
 
   # With CodeQL pre-filter + agentic classification
-  python test_pipeline.py /path/to/repo --analyzer-path analyzer.js --llm --agentic --processing-level codeql
+  python test_pipeline.py /path/to/repo --llm --agentic --processing-level codeql
 
   # Maximum cost savings: only exploitable units
-  python test_pipeline.py /path/to/repo --analyzer-path analyzer.js --llm --agentic --processing-level exploitable
+  python test_pipeline.py /path/to/repo --llm --agentic --processing-level exploitable
 """
         )
         parser.add_argument(
@@ -1199,8 +1226,8 @@ Examples:
         )
         parser.add_argument(
             '--analyzer-path',
-            required=True,
-            help='Path to typescript_analyzer.js'
+            default=os.path.join(os.path.dirname(os.path.abspath(__file__)), 'typescript_analyzer.js'),
+            help='Path to typescript_analyzer.js (default: co-located file)'
         )
         parser.add_argument(
             '--llm',
@@ -1218,6 +1245,22 @@ Examples:
             default='all',
             help='Processing level: all (L1), reachable (L2), codeql (L3), exploitable (L4)'
         )
+        parser.add_argument(
+            '--skip-tests',
+            action='store_true',
+            help='Skip test files'
+        )
+        parser.add_argument(
+            '--depth', '-d',
+            type=int,
+            default=3,
+            help='Max dependency resolution depth (default: 3)'
+        )
+        parser.add_argument(
+            '--name', '-n',
+            default=None,
+            help='Dataset name (default: derived from repo path)'
+        )
 
         args = parser.parse_args()
         repo_path = args.repo_path
@@ -1226,6 +1269,9 @@ Examples:
         enable_llm = args.llm
         agentic = args.agentic
         processing_level = ProcessingLevel(args.processing_level)
+        skip_tests = args.skip_tests
+        depth = args.depth
+        name = args.name
 
     if not os.path.exists(repo_path):
         print(f"Error: Repository not found: {repo_path}")
@@ -1246,7 +1292,10 @@ Examples:
         enable_llm=enable_llm,
         agentic=agentic,
         analyzer_path=analyzer_path,
-        processing_level=processing_level
+        processing_level=processing_level,
+        skip_tests=skip_tests,
+        depth=depth,
+        name=name
     )
     results = pipeline.run_full_pipeline()
 

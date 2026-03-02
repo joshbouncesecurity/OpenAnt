@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"os"
+	"strings"
 
 	"github.com/knostic/open-ant-cli/internal/output"
 	"github.com/knostic/open-ant-cli/internal/python"
@@ -14,7 +15,7 @@ var parseCmd = &cobra.Command{
 	Long: `Parse extracts analyzable code units from a repository.
 
 The output is a JSON dataset that can be fed into the analyze command.
-Supports Python, JavaScript/TypeScript, Go, and C/C++ repositories.
+Supports Python, JavaScript/TypeScript, Go, C/C++, Ruby, and PHP repositories.
 
 If no repository path is given, the active project is used (see: openant init).`,
 	Args: cobra.MaximumNArgs(1),
@@ -29,7 +30,7 @@ var (
 
 func init() {
 	parseCmd.Flags().StringVarP(&parseOutput, "output", "o", "", "Output directory (default: project scan dir)")
-	parseCmd.Flags().StringVarP(&parseLanguage, "language", "l", "", "Language: python, javascript, go, c, auto")
+	parseCmd.Flags().StringVarP(&parseLanguage, "language", "l", "", "Language: python, javascript, go, c, ruby, php, auto")
 	parseCmd.Flags().StringVar(&parseLevel, "level", "all", "Processing level: all, reachable, codeql, exploitable")
 }
 
@@ -63,7 +64,21 @@ func runParse(cmd *cobra.Command, args []string) {
 		os.Exit(2)
 	}
 
+	// Construct dataset name from project metadata: org-repo-shortSHA
+	var datasetName string
+	if ctx != nil && ctx.Project != nil {
+		slug := strings.ReplaceAll(ctx.Project.Name, "/", "-")
+		if ctx.Project.CommitSHAShort != "" {
+			datasetName = slug + "-" + ctx.Project.CommitSHAShort
+		} else {
+			datasetName = slug
+		}
+	}
+
 	pyArgs := []string{"parse", repoPath, "--output", parseOutput}
+	if datasetName != "" {
+		pyArgs = append(pyArgs, "--name", datasetName)
+	}
 	if parseLanguage != "auto" {
 		pyArgs = append(pyArgs, "--language", parseLanguage)
 	}

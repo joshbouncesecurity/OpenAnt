@@ -31,6 +31,7 @@ const path = require('path');
 class RepositoryScanner {
     constructor(repoPath, options = {}) {
         this.repoPath = path.resolve(repoPath);
+        this.skipTests = options.skipTests || false;
 
         // Default exclude patterns
         this.excludePatterns = options.excludePatterns || [
@@ -69,11 +70,33 @@ class RepositoryScanner {
             byExtension: {},
             totalSizeBytes: 0,
             directoriesScanned: 0,
-            directoriesExcluded: 0
+            directoriesExcluded: 0,
+            testFilesSkipped: 0
         };
 
         // Results
         this.files = [];
+    }
+
+    /**
+     * Check if a file is a test file
+     */
+    isTestFile(relativePath) {
+        const base = path.basename(relativePath);
+        const dir = relativePath.replace(/\\/g, '/');
+
+        // Directory-based patterns
+        if (dir.includes('__tests__/') || dir.includes('__mocks__/') ||
+            /(?:^|\/)tests?\//.test(dir)) {
+            return true;
+        }
+
+        // File name patterns: .test.*, .spec.*, _test.*, test_*
+        if (/\.(test|spec)\.[jt]sx?$/.test(base)) return true;
+        if (/_(test)\.[jt]sx?$/.test(base)) return true;
+        if (/^test_/.test(base)) return true;
+
+        return false;
     }
 
     /**
@@ -125,6 +148,12 @@ class RepositoryScanner {
                 this.scanDirectory(fullPath, entryRelativePath);
             } else if (entry.isFile()) {
                 if (this.isSourceFile(entry.name)) {
+                    // Skip test files if requested
+                    if (this.skipTests && this.isTestFile(entryRelativePath)) {
+                        this.stats.testFilesSkipped++;
+                        continue;
+                    }
+
                     // Get file stats
                     let fileStats;
                     try {
@@ -171,7 +200,8 @@ class RepositoryScanner {
             byExtension: {},
             totalSizeBytes: 0,
             directoriesScanned: 0,
-            directoriesExcluded: 0
+            directoriesExcluded: 0,
+            testFilesSkipped: 0
         };
 
         // Run scan
@@ -208,6 +238,7 @@ if (require.main === module) {
     const repoPath = args[0];
     let outputFile = null;
     let additionalExcludes = [];
+    let skipTests = false;
 
     // Parse arguments
     for (let i = 1; i < args.length; i++) {
@@ -217,11 +248,16 @@ if (require.main === module) {
         } else if (args[i] === '--exclude' && args[i + 1]) {
             additionalExcludes = args[i + 1].split(',').map(s => s.trim());
             i++;
+        } else if (args[i] === '--skip-tests') {
+            skipTests = true;
         }
     }
 
     try {
         const options = {};
+        if (skipTests) {
+            options.skipTests = true;
+        }
         if (additionalExcludes.length > 0) {
             // Merge with default excludes
             const defaultExcludes = [

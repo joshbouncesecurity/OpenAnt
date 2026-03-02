@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-C/C++ Parser Pipeline
+PHP Parser Pipeline
 
-Tests the C/C++ parser pipeline components:
-1. RepositoryScanner - Enumerates .c/.h/.cpp/.hpp files
+Tests the PHP parser pipeline components:
+1. RepositoryScanner - Enumerates .rb/.rake files
 2. FunctionExtractor - Extracts functions via tree-sitter
 3. CallGraphBuilder  - Builds bidirectional call graphs
-4. UnitGenerator     - Creates OpenAnt dataset format
+4. UnitGenerator     - Creates Sastinel dataset format
 5. CodeQL (optional) - Static analysis pre-filter
 6. ContextEnhancer (optional) - LLM enhancement using Claude Sonnet
 
@@ -66,7 +66,7 @@ class ProcessingLevel(Enum):
     EXPLOITABLE = "exploitable"
 
 
-class CPipelineTest:
+class PHPPipelineTest:
     def __init__(
         self,
         repo_path: str,
@@ -117,12 +117,12 @@ class CPipelineTest:
         return True
 
     def run_parser_pipeline(self) -> bool:
-        """Run the full C/C++ parser pipeline (scan, extract, call graph, generate)."""
+        """Run the full PHP parser pipeline (scan, extract, call graph, generate)."""
         self.dataset_file = os.path.join(self.output_dir, 'dataset.json')
         self.analyzer_output_file = os.path.join(self.output_dir, 'analyzer_output.json')
 
         print("=" * 60)
-        print("STAGE: c_parser_pipeline")
+        print("STAGE: php_parser_pipeline")
         print("=" * 60)
         print()
 
@@ -130,7 +130,7 @@ class CPipelineTest:
 
         try:
             # Stage 1: Scan
-            print("  [1/4] Scanning repository for C/C++ files...")
+            print("  [1/4] Scanning repository for PHP files...")
             scanner_options = {'skip_tests': self.skip_tests}
             scanner = RepositoryScanner(self.repo_path, scanner_options)
             scan_result = scanner.scan()
@@ -167,10 +167,10 @@ class CPipelineTest:
 
             # Stage 4: Generate units
             print("  [4/4] Generating dataset units...")
-            opts = {'max_depth': self.depth}
+            gen_options = {'max_depth': self.depth}
             if self.dataset_name:
-                opts['dataset_name'] = self.dataset_name
-            generator = UnitGenerator(graph_result, opts)
+                gen_options['dataset_name'] = self.dataset_name
+            generator = UnitGenerator(graph_result, gen_options)
             dataset = generator.generate_units()
             unit_count = dataset['statistics']['total_units']
             print(f"         Generated {unit_count} units")
@@ -208,7 +208,7 @@ class CPipelineTest:
             print(f"  Success ({elapsed:.2f}s)")
             print()
 
-            self.results['stages']['c_parser'] = result
+            self.results['stages']['php_parser'] = result
             return True
 
         except Exception as e:
@@ -221,7 +221,7 @@ class CPipelineTest:
                 'elapsed_seconds': elapsed,
                 'error': str(e)
             }
-            self.results['stages']['c_parser'] = result
+            self.results['stages']['php_parser'] = result
             return False
 
     def apply_reachability_filter(self) -> bool:
@@ -257,8 +257,8 @@ class CPipelineTest:
                     'filePath': func_data.get('filePath', func_data.get('file_path', '')),
                     'startLine': func_data.get('startLine', func_data.get('start_line', 0)),
                     'endLine': func_data.get('endLine', func_data.get('end_line', 0)),
-                    'isExported': func_data.get('isExported', func_data.get('is_exported', False)),
-                    'isStatic': func_data.get('isStatic', func_data.get('is_static', False)),
+                    'isExported': func_data.get('isExported', True),
+                    'isSingleton': func_data.get('isSingleton', func_data.get('is_singleton', False)),
                 }
 
             # Build call graph from dataset unit metadata
@@ -362,7 +362,7 @@ class CPipelineTest:
 
         start_time = datetime.now()
 
-        language = "cpp"
+        language = "php"
         print(f"Language: {language}")
 
         codeql_db_path = os.path.join(self.output_dir, 'codeql-db')
@@ -655,7 +655,7 @@ class CPipelineTest:
 
         mode = "agentic" if self.agentic else "single-shot"
         print("=" * 60)
-        print(f"STAGE: context_enhancer (Python, {mode} mode)")
+        print(f"STAGE: context_enhancer (PHP, {mode} mode)")
         print("=" * 60)
         print()
 
@@ -813,7 +813,7 @@ class CPipelineTest:
     def run_full_pipeline(self):
         """Run the complete pipeline."""
         print("=" * 60)
-        print("C/C++ PARSER PIPELINE")
+        print("PHP PARSER PIPELINE")
         print("=" * 60)
         print(f"Repository: {self.repo_path}")
         print(f"Processing Level: {self.processing_level.value}")
@@ -932,7 +932,7 @@ class CPipelineTest:
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Run the C/C++ parser pipeline on a repository',
+        description='Run the PHP parser pipeline on a repository',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Processing Levels (cumulative filtering):
@@ -957,7 +957,7 @@ Examples:
     )
     parser.add_argument(
         'repo_path',
-        help='Path to the C/C++ repository to analyze'
+        help='Path to the PHP repository to analyze'
     )
     parser.add_argument(
         '--output', '-o',
@@ -1009,7 +1009,7 @@ Examples:
         print("Warning: --processing-level exploitable requires --llm --agentic for classification")
         print("Units will be filtered by reachability only, not by exploitability")
 
-    pipeline = CPipelineTest(
+    pipeline = PHPPipelineTest(
         args.repo_path,
         args.output,
         enable_llm=args.llm,
