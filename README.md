@@ -4,9 +4,9 @@
 
 # OpenAnt
 
-OpenAnt from [Knostic](https://knostic.ai) is an open source LLM-based vulnerability discovery product that helps defenders proactively find verified security flaws while minimizing both false positives and false negatives. Stage 1 detects. Stage 2 attacks. What survives is real.
+[OpenAnt](https://knostic.ai/openant) from [Knostic](https://knostic.ai) is an open source LLM-based vulnerability discovery product that helps defenders proactively find verified security flaws while minimizing both false positives and false negatives. Stage 1 detects. Stage 2 attacks. What survives is real.
 
-We're pretty proud of this product and are in the disclosure process for its findings, but do keep in mind that this started as a research project with some of its features still in beta, and we welcome contributions to make it better.
+We're pretty proud of this product and are in the disclosure process for its findings, but do keep in mind that this started as a research project and some of the features still in beta, and we welcome contributions to make it better.
 
 ## Why open source?
 Considering the explosion of AI-discovered vulnerabilities, we hope OpenAnt will be the tool helping open source maintainers stay ahead of attackers, where they can use it themselves or submit their repo for scanning at no cost.
@@ -14,7 +14,7 @@ Considering the explosion of AI-discovered vulnerabilities, we hope OpenAnt will
 Then, since Knostic's focus is on protecting agents and coding assistants and not vulnerability research or application security, and we like open source, we decided to release OpenAnt under the Apache 2 license.
 Besides, you may have heard about Aardvark from OpenAI (now Codex Security) and Claude Code Security from Anthropic, and we have zero intention of competing with them.
 
-## Technical details and free scanning
+## Technical details and free scanning for open source projects
 For technical details, limitations, and token costs, check out this blog post:
 
 To submit your repo for scanning:
@@ -22,10 +22,10 @@ To submit your repo for scanning:
 ## Supported languages
 - Go
 - Python
-- JavaScript/TypeScript
-- C/C++
-- PHP
-- Ruby (coming soon)
+- JavaScript/TypeScript (beta)
+- C/C++ (beta)
+- PHP (beta)
+- Ruby (beta)
 
 ## Credit
 Research: Nahum Korda.
