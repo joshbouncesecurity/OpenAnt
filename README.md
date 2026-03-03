@@ -28,6 +28,11 @@ To submit your repo for scanning:
 - C/C++ (beta)
 - PHP (beta)
 - Ruby (beta)
+- Rust (beta)
+
+## Adding a new language
+
+Want to add support for another language? See [adding-a-parser.md](adding-a-parser.md) for the full guide. The Ruby parser is the cleanest reference implementation to copy.
 
 ## Credits
 Research and ideation: [Nahum Korda](https://github.com/NahumKorda/).
