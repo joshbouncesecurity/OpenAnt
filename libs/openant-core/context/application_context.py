@@ -29,8 +29,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
+
+from utilities.llm_client import create_anthropic_client, create_message
 
 # Load environment variables
 load_dotenv()
@@ -503,8 +504,9 @@ def generate_application_context(
 
     # Call LLM
     print(f"Generating context with {model}...", file=sys.stderr)
-    client = Anthropic()
-    response = client.messages.create(
+    client = create_anthropic_client()
+    response_text = create_message(
+        client,
         model=model,
         max_tokens=2000,
         messages=[{
@@ -512,9 +514,6 @@ def generate_application_context(
             "content": CONTEXT_GENERATION_PROMPT.format(sources=sources_text)
         }]
     )
-
-    # Parse response
-    response_text = response.content[0].text
 
     # Extract JSON from response
     json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)

@@ -35,9 +35,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-import anthropic
-
-from .llm_client import TokenTracker, get_global_tracker
+from .llm_client import TokenTracker, get_global_tracker, create_anthropic_client, create_message
 
 # Null logger that discards all messages (used when no logger provided)
 _null_logger = logging.getLogger("null_verifier")
@@ -266,7 +264,7 @@ class FindingVerifier:
         self.verbose = verbose
         self.app_context = app_context
         self.tool_executor = ToolExecutor(index)
-        self.client = anthropic.Anthropic()
+        self.client = create_anthropic_client()
         self.logger = logger or _null_logger
         self._use_logger = logger is not None
 
