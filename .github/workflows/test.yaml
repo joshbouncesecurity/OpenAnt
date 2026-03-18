@@ -1,0 +1,107 @@
+name: tests
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  python-tests:
+    name: Python tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        working-directory: libs/openant-core
+        run: pip install -r requirements.txt && pip install pytest
+
+      - name: Install JS parser dependencies
+        working-directory: libs/openant-core/parsers/javascript
+        run: npm install
+
+      - name: Run Python and parser tests
+        working-directory: libs/openant-core
+        run: python -m pytest tests/test_token_tracker.py tests/test_parser_adapter.py tests/test_python_parser.py tests/test_js_parser.py -v
+
+  go-build:
+    name: Go build + vet (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/openant-cli/go.mod
+
+      - name: Vet
+        working-directory: apps/openant-cli
+        run: go vet ./...
+
+      - name: Build
+        working-directory: apps/openant-cli
+        run: go build -o openant .
+
+  go-cli-integration:
+    name: Go CLI integration (${{ matrix.os }})
+    needs: go-build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/openant-cli/go.mod
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install Python dependencies
+        working-directory: libs/openant-core
+        run: pip install -r requirements.txt && pip install pytest
+
+      - name: Install JS parser dependencies
+        working-directory: libs/openant-core/parsers/javascript
+        run: npm install
+
+      - name: Build Go CLI
+        working-directory: apps/openant-cli
+        run: go build -o openant .
+
+      - name: Run Go CLI integration tests
+        working-directory: libs/openant-core
+        run: python -m pytest tests/test_go_cli.py -v
