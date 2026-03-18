@@ -4,6 +4,10 @@ on:
     branches: [master, add-test-suite]
   pull_request:
 
+env:
+  # setup-python@v5 and setup-go@v5 don't have Node.js 24 releases yet
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   python-tests:
     name: Python tests (${{ matrix.os }})
@@ -12,7 +16,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        python-version: ["3.11"]
 
     steps:
       - uses: actions/checkout@v5
@@ -20,7 +23,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.11"
 
       - name: Set up Node.js
         uses: actions/setup-node@v5
@@ -39,8 +42,8 @@ jobs:
         working-directory: libs/openant-core
         run: python -m pytest tests/test_token_tracker.py tests/test_parser_adapter.py tests/test_python_parser.py tests/test_js_parser.py -v
 
-  go-build:
-    name: Go build + vet (${{ matrix.os }})
+  go-tests:
+    name: Go build + integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -55,6 +58,16 @@ jobs:
         with:
           go-version-file: apps/openant-cli/go.mod
           cache-dependency-path: apps/openant-cli/go.sum
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
 
       - name: Vet
         working-directory: apps/openant-cli
@@ -64,33 +77,6 @@ jobs:
         working-directory: apps/openant-cli
         run: go build -o openant .
 
-  go-cli-integration:
-    name: Go CLI integration (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version-file: apps/openant-cli/go.mod
-          cache-dependency-path: apps/openant-cli/go.sum
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-
       - name: Install Python dependencies
         working-directory: libs/openant-core
         run: pip install -r requirements.txt && pip install pytest
@@ -98,10 +84,6 @@ jobs:
       - name: Install JS parser dependencies
         working-directory: libs/openant-core/parsers/javascript
         run: npm install
-
-      - name: Build Go CLI
-        working-directory: apps/openant-cli
-        run: go build -o openant .
 
       - name: Run Go CLI integration tests
         working-directory: libs/openant-core
