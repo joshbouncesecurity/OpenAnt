@@ -1,8 +1,11 @@
 name: tests
 on:
   push:
-    branches: [master, add-test-suite]
+    branches: [master]
   pull_request:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   python-tests:
@@ -54,6 +57,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: apps/openant-cli/go.mod
+          cache-dependency-path: apps/openant-cli/go.sum
 
       - name: Vet
         working-directory: apps/openant-cli
@@ -65,7 +69,6 @@ jobs:
 
   go-cli-integration:
     name: Go CLI integration (${{ matrix.os }})
-    needs: go-build
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -84,6 +87,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version-file: apps/openant-cli/go.mod
+          cache-dependency-path: apps/openant-cli/go.sum
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
