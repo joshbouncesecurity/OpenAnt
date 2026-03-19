@@ -17,10 +17,28 @@ CLI_DIR = Path(__file__).parent.parent.parent.parent / "apps" / "openant-cli"
 BINARY_NAME = "openant.exe" if sys.platform == "win32" else "openant"
 BINARY = CLI_DIR / BINARY_NAME
 
-pytestmark = pytest.mark.skipif(
-    not BINARY.exists(),
-    reason=f"Go binary not built at {BINARY}. Run: cd apps/openant-cli && go build -o {BINARY_NAME} .",
-)
+
+def _build_binary():
+    """Build the Go CLI binary if it doesn't exist."""
+    if BINARY.exists():
+        return
+    if not shutil.which("go"):
+        pytest.skip("Go toolchain not installed")
+    result = subprocess.run(
+        ["go", "build", "-o", str(BINARY), "."],
+        cwd=str(CLI_DIR),
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    if result.returncode != 0:
+        pytest.fail(f"Failed to build Go binary:\n{result.stderr}")
+
+
+@pytest.fixture(autouse=True, scope="session")
+def ensure_binary():
+    """Build the Go CLI binary once per test session."""
+    _build_binary()
 
 
 def run_cli(*args, env_override=None):
@@ -111,9 +129,7 @@ class TestParse:
         assert envelope["status"] == "success"
 
     def test_parse_js_repo(self, sample_js_repo, tmp_path):
-        """JS parsing via Go CLI. May fail if the Go CLI finds system Python
-        instead of the venv (missing anthropic package).
-        """
+        """JS parsing via Go CLI."""
         output_dir = str(tmp_path / "output")
         result = run_cli(
             "parse", sample_js_repo,
@@ -121,12 +137,7 @@ class TestParse:
             "--language", "javascript",
             "--json",
         )
-        if result.returncode != 0:
-            if "No module named" in result.stderr:
-                pytest.skip("Go CLI using system Python without required packages")
-            if "UnicodeEncodeError" in result.stderr:
-                pytest.skip("Pre-existing Unicode bug in JS test_pipeline.py on Windows")
-        assert result.returncode == 0
+        assert result.returncode == 0, f"JS parse failed:\n{result.stderr}"
         envelope = json.loads(result.stdout)
         assert envelope["status"] == "success"
 
