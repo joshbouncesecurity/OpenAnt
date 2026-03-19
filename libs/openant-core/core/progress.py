@@ -113,13 +113,13 @@ class ProgressReporter:
         # Build the progress line
         parts = [
             f"[{self.step_name}]",
-            f"{self.completed:>{self._width}}/{self.total}",
+            f"{self.completed:>{self._width}}/{self.total} done",
             unit_label,
+            f"-> {detail}" if detail else "",
         ]
-        if detail:
-            parts.append(detail)
+        parts = [p for p in parts if p]
         if unit_elapsed > 0:
-            parts.append(f"{unit_elapsed:.1f}s")
+            parts.append(f"({unit_elapsed:.1f}s)")
 
         meta = f"(elapsed {_fmt_duration(elapsed)}, ETA {eta}, {_fmt_cost(cost)})"
         parts.append(meta)
