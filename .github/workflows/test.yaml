@@ -73,9 +73,25 @@ jobs:
         working-directory: apps/openant-cli
         run: go vet ./...
 
-      - name: Build
+      - name: Build (Linux/macOS)
+        if: runner.os != 'Windows'
         working-directory: apps/openant-cli
         run: go build -o openant .
+
+      - name: Build (Windows)
+        if: runner.os == 'Windows'
+        working-directory: apps/openant-cli
+        run: go build -o openant.exe .
+
+      - name: Verify binary exists
+        working-directory: apps/openant-cli
+        shell: bash
+        run: |
+          if [ -f openant ] || [ -f openant.exe ]; then
+            echo "Binary built successfully"
+          else
+            echo "ERROR: Binary not found" && exit 1
+          fi
 
       - name: Install Python dependencies
         working-directory: libs/openant-core
@@ -87,4 +103,4 @@ jobs:
 
       - name: Run Go CLI integration tests
         working-directory: libs/openant-core
-        run: python -m pytest tests/test_go_cli.py -v
+        run: python -m pytest tests/test_go_cli.py -v --tb=short
