@@ -15,13 +15,14 @@ All LLM calls are now centralized in Python.
 import json
 import argparse
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from .llm_client import AnthropicClient, TokenTracker, get_global_tracker, reset_global_tracker
-from .agentic_enhancer import RepositoryIndex, enhance_unit_with_agent, load_index_from_file
+from .llm_client import AnthropicClient, TokenTracker, get_global_tracker
+from .agentic_enhancer import enhance_unit_with_agent, load_index_from_file
 
 
 # Null logger that discards all messages (used when no logger provided)
@@ -260,7 +261,7 @@ class ContextEnhancer:
 
         except Exception as e:
             self.stats["errors"] += 1
-            self._log("error", f"Error enhancing unit", unit_id=function_id, error=str(e))
+            self._log("error", "Error enhancing unit", unit_id=function_id, error=str(e))
             unit["llm_context"] = self._get_default_context()
 
         return unit
@@ -469,7 +470,7 @@ class ContextEnhancer:
             except Exception as e:
                 classification = "error"
                 agentic_stats["errors"] += 1
-                self._log("error", f"Error processing unit", unit_id=unit_id, error=str(e))
+                self._log("error", "Error processing unit", unit_id=unit_id, error=str(e))
                 unit["agent_context"] = {
                     "error": str(e),
                     "security_classification": "neutral",
