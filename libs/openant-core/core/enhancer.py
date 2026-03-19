@@ -21,6 +21,7 @@ def enhance_dataset(
     repo_path: str | None = None,
     mode: str = "agentic",
     checkpoint_path: str | None = None,
+    fresh: bool = False,
     model: str = "sonnet",
 ) -> EnhanceResult:
     """Enhance a parsed dataset with security context.
@@ -39,6 +40,14 @@ def enhance_dataset(
     """
     # Reset tracking for this step
     tracking.reset_tracking()
+
+    # Auto-generate checkpoint path next to output file (agentic mode only)
+    if checkpoint_path is None and mode == "agentic":
+        checkpoint_path = os.path.splitext(output_path)[0] + "_checkpoint.json"
+
+    # If fresh, delete existing checkpoint
+    if fresh and checkpoint_path and os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
 
     model_id = "claude-sonnet-4-20250514" if model == "sonnet" else "claude-opus-4-6"
     print(f"[Enhance] Mode: {mode}", file=sys.stderr)
@@ -93,9 +102,9 @@ def enhance_dataset(
     progress.finish()
 
     # Write enhanced dataset
+    from core.utils import atomic_write_json
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(enhanced, f, indent=2)
+    atomic_write_json(output_path, enhanced)
 
     print(f"[Enhance] Enhanced dataset: {output_path}", file=sys.stderr)
 

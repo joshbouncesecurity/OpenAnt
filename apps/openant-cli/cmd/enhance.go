@@ -27,7 +27,7 @@ var (
 	enhanceAnalyzerOutput string
 	enhanceRepoPath       string
 	enhanceMode           string
-	enhanceCheckpoint     string
+	enhanceFresh          bool
 )
 
 func init() {
@@ -35,7 +35,7 @@ func init() {
 	enhanceCmd.Flags().StringVar(&enhanceAnalyzerOutput, "analyzer-output", "", "Path to analyzer_output.json (required for agentic mode)")
 	enhanceCmd.Flags().StringVar(&enhanceRepoPath, "repo-path", "", "Path to the repository (required for agentic mode)")
 	enhanceCmd.Flags().StringVar(&enhanceMode, "mode", "agentic", "Enhancement mode: agentic (thorough) or single-shot (fast)")
-	enhanceCmd.Flags().StringVar(&enhanceCheckpoint, "checkpoint", "", "Path to save/resume checkpoint (agentic mode)")
+	enhanceCmd.Flags().BoolVar(&enhanceFresh, "fresh", false, "Ignore checkpoint and reprocess all units from scratch")
 }
 
 func runEnhance(cmd *cobra.Command, args []string) {
@@ -77,8 +77,8 @@ func runEnhance(cmd *cobra.Command, args []string) {
 	if enhanceMode != "agentic" {
 		pyArgs = append(pyArgs, "--mode", enhanceMode)
 	}
-	if enhanceCheckpoint != "" {
-		pyArgs = append(pyArgs, "--checkpoint", enhanceCheckpoint)
+	if enhanceFresh {
+		pyArgs = append(pyArgs, "--fresh")
 	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())

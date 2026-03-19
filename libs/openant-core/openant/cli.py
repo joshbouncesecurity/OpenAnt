@@ -135,7 +135,7 @@ def cmd_enhance(args):
                 analyzer_output_path=args.analyzer_output,
                 repo_path=args.repo_path,
                 mode=args.mode,
-                checkpoint_path=args.checkpoint,
+                fresh=args.fresh,
             )
 
             ctx.summary = {
@@ -519,7 +519,8 @@ def main():
     enhance_p.add_argument("--analyzer-output", help="Path to analyzer_output.json (required for agentic mode)")
     enhance_p.add_argument("--repo-path", help="Path to the repository (required for agentic mode)")
     enhance_p.add_argument("--output", "-o", help="Output path for enhanced dataset (default: {input}_enhanced.json)")
-    enhance_p.add_argument("--checkpoint", help="Path to save/resume checkpoint (agentic mode)")
+    enhance_p.add_argument("--fresh", action="store_true",
+                           help="Ignore checkpoint and reprocess all units from scratch")
     enhance_p.add_argument(
         "--mode",
         choices=["agentic", "single-shot"],
