@@ -20,44 +20,45 @@ from core.schemas import ParseResult
 # Root of openant-core (where parsers/ lives)
 _CORE_ROOT = Path(__file__).parent.parent
 
+# Shared language detection config (single source of truth: config/languages.json)
+_LANGUAGES_CONFIG = Path(__file__).parent.parent.parent.parent / "config" / "languages.json"
+
+
+def _load_language_config() -> dict:
+    """Load language detection config from the shared config/languages.json."""
+    with open(_LANGUAGES_CONFIG) as f:
+        return json.load(f)
+
 
 def detect_language(repo_path: str) -> str:
     """Auto-detect the primary language of a repository.
 
     Counts source files by extension and returns the dominant language.
+    Extension mappings and skip directories are loaded from config/languages.json.
 
     Returns:
-        "python", "javascript", or "go"
+        One of: "python", "javascript", "go", "c", "ruby", "php"
     """
+    config = _load_language_config()
+    skip_dirs = set(config["skip_dirs"])
+    extensions = config["extensions"]
+
     repo = Path(repo_path)
-    counts = {"python": 0, "javascript": 0, "go": 0, "c": 0, "ruby": 0, "php": 0}
+    counts: dict[str, int] = {}
 
     for f in repo.rglob("*"):
         if not f.is_file():
             continue
-        # Skip common non-source dirs
-        parts = f.parts
-        if any(p in parts for p in (
-            "node_modules", "__pycache__", "venv", ".venv",
-            "dist", "build", ".git", "vendor",
-        )):
+        # Skip configured non-source dirs
+        if any(p in skip_dirs for p in f.parts):
             continue
 
         suffix = f.suffix.lower()
-        if suffix == ".py":
-            counts["python"] += 1
-        elif suffix in (".js", ".ts", ".jsx", ".tsx", ".mjs", ".cjs"):
-            counts["javascript"] += 1
-        elif suffix == ".go":
-            counts["go"] += 1
-        elif suffix in (".c", ".h", ".cpp", ".hpp", ".cc", ".cxx", ".hxx", ".hh"):
-            counts["c"] += 1
-        elif suffix in (".rb", ".rake"):
-            counts["ruby"] += 1
-        elif suffix == ".php":
-            counts["php"] += 1
+        if suffix in extensions:
+            lang = extensions[suffix]
+            counts[lang] = counts.get(lang, 0) + 1
 
-    if not any(counts.values()):
+    if not counts:
         raise ValueError(
             f"No supported source files found in {repo_path}. "
             "Supported languages: Python, JavaScript/TypeScript, Go, C/C++, Ruby, PHP."
