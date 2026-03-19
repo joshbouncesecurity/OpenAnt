@@ -38,6 +38,7 @@ var (
 	scanDynamicTest bool
 	scanLimit       int
 	scanModel       string
+	scanFresh       bool
 )
 
 func init() {
@@ -52,6 +53,7 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanDynamicTest, "dynamic-test", false, "Enable Docker-isolated dynamic testing (off by default)")
 	scanCmd.Flags().IntVar(&scanLimit, "limit", 0, "Max units to analyze (0 = no limit)")
 	scanCmd.Flags().StringVar(&scanModel, "model", "opus", "Model: opus or sonnet")
+	scanCmd.Flags().BoolVar(&scanFresh, "fresh", false, "Ignore previous progress and rerun all steps from scratch")
 }
 
 func runScan(cmd *cobra.Command, args []string) {
@@ -114,6 +116,9 @@ func runScan(cmd *cobra.Command, args []string) {
 	}
 	if scanModel != "opus" {
 		pyArgs = append(pyArgs, "--model", scanModel)
+	}
+	if scanFresh {
+		pyArgs = append(pyArgs, "--fresh")
 	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())
