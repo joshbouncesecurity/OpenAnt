@@ -341,9 +341,17 @@ def enhance_unit_with_agent(
     unit_id = unit.get("id", "unknown")
     unit_type = unit.get("unit_type", "function")
     code_section = unit.get("code", {})
-    primary_code = code_section.get("primary_code", "")
-    static_deps = unit.get("metadata", {}).get("direct_calls", [])
-    static_callers = unit.get("metadata", {}).get("direct_callers", [])
+    if isinstance(code_section, str):
+        primary_code = code_section
+    else:
+        primary_code = code_section.get("primary_code", "")
+    metadata = unit.get("metadata", {})
+    if isinstance(metadata, str):
+        static_deps = []
+        static_callers = []
+    else:
+        static_deps = metadata.get("direct_calls", [])
+        static_callers = metadata.get("direct_callers", [])
 
     # Run agent
     result = agent.analyze_unit(
@@ -375,9 +383,9 @@ def enhance_unit_with_agent(
                     additional_files.add(func_id[:colon_idx])
 
         # Append to primary_code with file boundaries
-        if additional_code:
+        if additional_code and isinstance(unit.get("code"), dict):
             FILE_BOUNDARY = "\n\n// ========== File Boundary ==========\n\n"
-            current_code = unit["code"]["primary_code"]
+            current_code = unit["code"].get("primary_code", "")
             assembled = current_code + FILE_BOUNDARY + FILE_BOUNDARY.join(additional_code)
             unit["code"]["primary_code"] = assembled
 
