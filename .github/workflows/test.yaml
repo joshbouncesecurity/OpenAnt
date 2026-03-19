@@ -32,7 +32,11 @@ jobs:
 
       - name: Install Python dependencies
         working-directory: libs/openant-core
-        run: pip install -r requirements.txt && pip install pytest
+        run: pip install -r requirements.txt && pip install pytest ruff
+
+      - name: Lint Python (undefined names, syntax errors)
+        working-directory: libs/openant-core
+        run: ruff check .
 
       - name: Install JS parser dependencies
         working-directory: libs/openant-core/parsers/javascript
@@ -40,7 +44,7 @@ jobs:
 
       - name: Run Python and parser tests
         working-directory: libs/openant-core
-        run: python -m pytest tests/test_token_tracker.py tests/test_parser_adapter.py tests/test_python_parser.py tests/test_js_parser.py -v
+        run: python -m pytest tests/test_token_tracker.py tests/test_parser_adapter.py tests/test_python_parser.py tests/test_js_parser.py tests/test_resume_stage1.py -v
 
   go-tests:
     name: Go build + integration (${{ matrix.os }})
