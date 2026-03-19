@@ -82,9 +82,7 @@ func runParse(cmd *cobra.Command, args []string) {
 	if parseLanguage != "auto" {
 		pyArgs = append(pyArgs, "--language", parseLanguage)
 	}
-	if parseLevel != "all" {
-		pyArgs = append(pyArgs, "--level", parseLevel)
-	}
+	pyArgs = append(pyArgs, "--level", parseLevel)
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, resolvedAPIKey())
 	if err != nil {
