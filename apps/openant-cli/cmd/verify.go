@@ -29,6 +29,7 @@ var (
 	verifyAnalyzerOutput string
 	verifyAppContext     string
 	verifyRepoPath       string
+	verifyFresh          bool
 )
 
 func init() {
@@ -36,6 +37,7 @@ func init() {
 	verifyCmd.Flags().StringVar(&verifyAnalyzerOutput, "analyzer-output", "", "Path to analyzer_output.json")
 	verifyCmd.Flags().StringVar(&verifyAppContext, "app-context", "", "Path to application_context.json")
 	verifyCmd.Flags().StringVar(&verifyRepoPath, "repo-path", "", "Path to the repository")
+	verifyCmd.Flags().BoolVar(&verifyFresh, "fresh", false, "Ignore checkpoint and reverify all findings from scratch")
 }
 
 func runVerify(cmd *cobra.Command, args []string) {
@@ -77,6 +79,9 @@ func runVerify(cmd *cobra.Command, args []string) {
 	}
 	if verifyRepoPath != "" {
 		pyArgs = append(pyArgs, "--repo-path", verifyRepoPath)
+	}
+	if verifyFresh {
+		pyArgs = append(pyArgs, "--fresh")
 	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())
