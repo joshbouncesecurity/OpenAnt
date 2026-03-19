@@ -11,6 +11,9 @@ from utilities.local_claude import (
     _Response,
     _Messages,
     LocalClaudeClient,
+    _build_tool_system_prompt,
+    _serialize_messages,
+    _parse_tool_calls,
 )
 from utilities.llm_client import (
     AnthropicClient,
@@ -46,6 +49,39 @@ SAMPLE_CLI_OUTPUT_NO_RESULT = json.dumps({
     "usage": {"input_tokens": 0, "output_tokens": 0},
 })
 
+# --- Sample tool definitions for testing ---
+
+SAMPLE_TOOLS = [
+    {
+        "name": "search_usages",
+        "description": "Search for function usages.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "function_name": {
+                    "type": "string",
+                    "description": "Name of the function"
+                }
+            },
+            "required": ["function_name"]
+        }
+    },
+    {
+        "name": "finish",
+        "description": "Complete the analysis.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "confidence": {
+                    "type": "number",
+                    "description": "Confidence level"
+                }
+            },
+            "required": ["confidence"]
+        }
+    },
+]
+
 
 def _make_completed_process(stdout="", stderr="", returncode=0):
     proc = MagicMock()
@@ -53,6 +89,20 @@ def _make_completed_process(stdout="", stderr="", returncode=0):
     proc.stderr = stderr
     proc.returncode = returncode
     return proc
+
+
+def _make_cli_output(text, input_tokens=100, output_tokens=50):
+    """Helper to create CLI JSON output with custom text."""
+    return json.dumps({
+        "type": "result",
+        "subtype": "success",
+        "result": text,
+        "total_cost_usd": 0.001,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+        },
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +190,318 @@ class TestRunClaudeCli:
 
         # When "result" is empty string, falls back to raw stdout
         assert result["text"] == SAMPLE_CLI_OUTPUT_NO_RESULT
+
+
+# ---------------------------------------------------------------------------
+# _parse_tool_calls()
+# ---------------------------------------------------------------------------
+
+class TestParseToolCalls:
+    def test_single_tool_call(self):
+        text = 'Some reasoning\n<tool_call>{"name": "search_usages", "input": {"function_name": "foo"}}</tool_call>'
+        blocks, remaining = _parse_tool_calls(text)
+
+        assert len(blocks) == 1
+        assert blocks[0].type == "tool_use"
+        assert blocks[0].name == "search_usages"
+        assert blocks[0].input == {"function_name": "foo"}
+        assert blocks[0].id.startswith("toolu_")
+        assert remaining == "Some reasoning"
+
+    def test_multiple_tool_calls(self):
+        text = (
+            '<tool_call>{"name": "search_usages", "input": {"function_name": "a"}}</tool_call>\n'
+            '<tool_call>{"name": "read_function", "input": {"function_id": "b"}}</tool_call>'
+        )
+        blocks, remaining = _parse_tool_calls(text)
+
+        assert len(blocks) == 2
+        assert blocks[0].name == "search_usages"
+        assert blocks[1].name == "read_function"
+        # Each gets a unique ID
+        assert blocks[0].id != blocks[1].id
+
+    def test_no_tool_calls(self):
+        text = "Just some plain text with no tools."
+        blocks, remaining = _parse_tool_calls(text)
+
+        assert len(blocks) == 0
+        assert remaining == text
+
+    def test_malformed_json_skipped(self, capsys):
+        text = '<tool_call>not valid json</tool_call>\n<tool_call>{"name": "finish", "input": {}}</tool_call>'
+        blocks, remaining = _parse_tool_calls(text)
+
+        assert len(blocks) == 1
+        assert blocks[0].name == "finish"
+        # Warning printed to stderr
+        captured = capsys.readouterr()
+        assert "malformed tool_call" in captured.err
+
+    def test_multiline_tool_call(self):
+        text = '<tool_call>\n{\n  "name": "finish",\n  "input": {"confidence": 0.9}\n}\n</tool_call>'
+        blocks, remaining = _parse_tool_calls(text)
+
+        assert len(blocks) == 1
+        assert blocks[0].name == "finish"
+        assert blocks[0].input == {"confidence": 0.9}
+
+
+# ---------------------------------------------------------------------------
+# _build_tool_system_prompt()
+# ---------------------------------------------------------------------------
+
+class TestBuildToolSystemPrompt:
+    def test_includes_original_system(self):
+        result = _build_tool_system_prompt(SAMPLE_TOOLS, "You are a security analyst.")
+        assert "You are a security analyst." in result
+
+    def test_includes_tool_names(self):
+        result = _build_tool_system_prompt(SAMPLE_TOOLS)
+        assert "search_usages" in result
+        assert "finish" in result
+
+    def test_includes_format_instructions(self):
+        result = _build_tool_system_prompt(SAMPLE_TOOLS)
+        assert "<tool_call>" in result
+        assert "tool_name" in result
+
+    def test_includes_parameter_details(self):
+        result = _build_tool_system_prompt(SAMPLE_TOOLS)
+        assert "function_name" in result
+        assert "(required)" in result
+
+    def test_no_original_system(self):
+        result = _build_tool_system_prompt(SAMPLE_TOOLS, None)
+        # Should still work, just no original system text
+        assert "search_usages" in result
+
+    def test_includes_tool_descriptions(self):
+        result = _build_tool_system_prompt(SAMPLE_TOOLS)
+        assert "Search for function usages." in result
+        assert "Complete the analysis." in result
+
+
+# ---------------------------------------------------------------------------
+# _serialize_messages()
+# ---------------------------------------------------------------------------
+
+class TestSerializeMessages:
+    def test_string_content(self):
+        messages = [{"role": "user", "content": "Analyze this code"}]
+        result = _serialize_messages(messages)
+        assert "Analyze this code" in result
+
+    def test_text_block_content(self):
+        messages = [{"role": "user", "content": [{"type": "text", "text": "Hello world"}]}]
+        result = _serialize_messages(messages)
+        assert "Hello world" in result
+
+    def test_tool_result_blocks(self):
+        messages = [{"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "abc123", "content": '{"found": true}'}
+        ]}]
+        result = _serialize_messages(messages)
+        assert "Tool result (id: abc123)" in result
+        assert '{"found": true}' in result
+
+    def test_attribute_based_tool_use_blocks(self):
+        """Test serialization of response.content objects (attribute-based)."""
+        tool_block = type("ToolUseBlock", (), {
+            "type": "tool_use",
+            "name": "search_usages",
+            "input": {"function_name": "foo"},
+            "id": "toolu_123",
+        })()
+        text_block = type("TextBlock", (), {
+            "type": "text",
+            "text": "Let me search for that.",
+        })()
+
+        messages = [{"role": "assistant", "content": [text_block, tool_block]}]
+        result = _serialize_messages(messages)
+        assert "Let me search for that." in result
+        assert "I called search_usages with:" in result
+        assert '"function_name": "foo"' in result
+
+    def test_multi_turn_conversation(self):
+        """Test full multi-turn message serialization."""
+        tool_block = type("ToolUseBlock", (), {
+            "type": "tool_use",
+            "name": "search_usages",
+            "input": {"function_name": "validate"},
+            "id": "toolu_abc",
+        })()
+
+        messages = [
+            {"role": "user", "content": "Analyze function X"},
+            {"role": "assistant", "content": [tool_block]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "toolu_abc", "content": "found 3 usages"}
+            ]},
+        ]
+        result = _serialize_messages(messages)
+        assert "Analyze function X" in result
+        assert "I called search_usages" in result
+        assert "Tool result (id: toolu_abc)" in result
+        assert "found 3 usages" in result
+
+
+# ---------------------------------------------------------------------------
+# _Messages.create() with tools
+# ---------------------------------------------------------------------------
+
+class TestMessagesCreateWithTools:
+    @patch("utilities.local_claude._run_claude_cli")
+    def test_returns_tool_use_blocks(self, mock_cli):
+        mock_cli.return_value = {
+            "text": 'Thinking...\n<tool_call>{"name": "search_usages", "input": {"function_name": "foo"}}</tool_call>',
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cost_usd": 0.001,
+        }
+
+        msgs = _Messages()
+        response = msgs.create(
+            model="claude-sonnet-4-20250514",
+            system="You are a security analyst.",
+            tools=SAMPLE_TOOLS,
+            messages=[{"role": "user", "content": "Analyze this"}],
+        )
+
+        # Should have text block + tool_use block
+        assert len(response.content) == 2
+        assert response.content[0].type == "text"
+        assert "Thinking" in response.content[0].text
+        assert response.content[1].type == "tool_use"
+        assert response.content[1].name == "search_usages"
+        assert response.content[1].input == {"function_name": "foo"}
+        assert response.content[1].id.startswith("toolu_")
+
+    @patch("utilities.local_claude._run_claude_cli")
+    def test_stop_reason_tool_use(self, mock_cli):
+        mock_cli.return_value = {
+            "text": '<tool_call>{"name": "finish", "input": {"confidence": 0.8}}</tool_call>',
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cost_usd": 0.001,
+        }
+
+        msgs = _Messages()
+        response = msgs.create(
+            tools=SAMPLE_TOOLS,
+            messages=[{"role": "user", "content": "test"}],
+        )
+
+        assert response.stop_reason == "tool_use"
+
+    @patch("utilities.local_claude._run_claude_cli")
+    def test_stop_reason_end_turn_no_tools(self, mock_cli):
+        mock_cli.return_value = {
+            "text": "Just plain text, no tool calls.",
+            "input_tokens": 100,
+            "output_tokens": 50,
+            "cost_usd": 0.001,
+        }
+
+        msgs = _Messages()
+        response = msgs.create(
+            tools=SAMPLE_TOOLS,
+            messages=[{"role": "user", "content": "test"}],
+        )
+
+        assert response.stop_reason == "end_turn"
+
+    @patch("utilities.local_claude._run_claude_cli")
+    def test_usage_tracked(self, mock_cli):
+        mock_cli.return_value = {
+            "text": '<tool_call>{"name": "finish", "input": {}}</tool_call>',
+            "input_tokens": 200,
+            "output_tokens": 75,
+            "cost_usd": 0.002,
+        }
+
+        msgs = _Messages()
+        response = msgs.create(
+            tools=SAMPLE_TOOLS,
+            messages=[{"role": "user", "content": "test"}],
+        )
+
+        assert response.usage.input_tokens == 200
+        assert response.usage.output_tokens == 75
+
+    @patch("utilities.local_claude._run_claude_cli")
+    def test_system_prompt_includes_tools(self, mock_cli):
+        mock_cli.return_value = {
+            "text": "no tools",
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "cost_usd": 0.0,
+        }
+
+        msgs = _Messages()
+        msgs.create(
+            system="Base system prompt",
+            tools=SAMPLE_TOOLS,
+            messages=[{"role": "user", "content": "test"}],
+        )
+
+        # Check that _run_claude_cli was called with enhanced system prompt
+        call_kwargs = mock_cli.call_args
+        system_arg = call_kwargs[1]["system"] if "system" in call_kwargs[1] else call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
+        # The system prompt is passed as kwarg 'system' to _run_claude_cli
+        _, kwargs = mock_cli.call_args
+        assert "search_usages" in kwargs["system"]
+        assert "Base system prompt" in kwargs["system"]
+
+
+class TestMessagesCreateWithoutTools:
+    """Backwards compatibility — create() without tools still works."""
+
+    @patch("utilities.local_claude._run_claude_cli")
+    def test_text_only_path(self, mock_cli):
+        mock_cli.return_value = {
+            "text": "The answer is 42.",
+            "input_tokens": 100,
+            "output_tokens": 20,
+            "cost_usd": 0.001,
+        }
+
+        msgs = _Messages()
+        response = msgs.create(
+            model="claude-sonnet-4-20250514",
+            messages=[{"role": "user", "content": "What is 6*7?"}],
+        )
+
+        assert response.content[0].type == "text"
+        assert response.content[0].text == "The answer is 42."
+        assert response.stop_reason == "end_turn"
+        assert response.usage.input_tokens == 100
+
+
+# ---------------------------------------------------------------------------
+# _Response backwards compatibility
+# ---------------------------------------------------------------------------
+
+class TestResponse:
+    def test_text_positional_arg(self):
+        """Existing callers pass text as positional arg."""
+        resp = _Response("hello")
+        assert resp.content[0].type == "text"
+        assert resp.content[0].text == "hello"
+        assert resp.stop_reason == "end_turn"
+
+    def test_content_kwarg(self):
+        """New path passes content list directly."""
+        block = type("ToolUseBlock", (), {"type": "tool_use", "name": "x", "input": {}, "id": "1"})()
+        resp = _Response(content=[block], stop_reason="tool_use")
+        assert resp.content[0].type == "tool_use"
+        assert resp.stop_reason == "tool_use"
+
+    def test_usage_present(self):
+        resp = _Response("hi", input_tokens=10, output_tokens=5)
+        assert resp.usage.input_tokens == 10
+        assert resp.usage.output_tokens == 5
 
 
 # ---------------------------------------------------------------------------
