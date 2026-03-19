@@ -272,6 +272,7 @@ def _write_verified_results(
         "verify": True,
         "metrics": experiment.get("metrics", {}),
         "results": merged_results,
+        "code_by_route": experiment.get("code_by_route", {}),
         "confirmed_findings": [
             r for r in verified_only
             if r.get("verification", {}).get("agree", False)
