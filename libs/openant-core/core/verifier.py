@@ -83,13 +83,17 @@ def run_verification(
             confirmed_vulnerabilities = 0
             findings_input = 0
             for r in verified_data.get("results", []):
+                # Count vulnerable/bypassable findings as input
+                # (matches the fresh verification path's filtering logic)
+                finding = r.get("finding", r.get("verdict", "")).lower()
+                if finding in ("vulnerable", "bypassable"):
+                    findings_input += 1
+
                 verification = r.get("verification")
                 if verification is None:
                     continue
-                findings_input += 1
                 if verification.get("agree", False):
                     agreed += 1
-                    finding = r.get("finding", "").lower()
                     if finding in ("vulnerable", "bypassable"):
                         confirmed_vulnerabilities += 1
                 else:
@@ -268,6 +272,7 @@ def _write_verified_results(
         "verify": True,
         "metrics": experiment.get("metrics", {}),
         "results": merged_results,
+        "code_by_route": experiment.get("code_by_route", {}),
         "confirmed_findings": [
             r for r in verified_only
             if r.get("verification", {}).get("agree", False)
