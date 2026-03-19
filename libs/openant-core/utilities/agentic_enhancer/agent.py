@@ -14,7 +14,7 @@ Supports reachability-aware classification to distinguish:
 import json
 from typing import Optional, Set, List
 
-import anthropic
+from utilities.llm_client import create_anthropic_client
 
 from ..llm_client import TokenTracker, get_global_tracker
 from .repository_index import RepositoryIndex
@@ -115,7 +115,7 @@ class ContextAgent:
         self.reachability = reachability
 
         # Initialize Anthropic client
-        self.client = anthropic.Anthropic()
+        self.client = create_anthropic_client()
 
     def analyze_unit(
         self,

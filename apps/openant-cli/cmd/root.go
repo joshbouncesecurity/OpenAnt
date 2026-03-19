@@ -4,6 +4,7 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/knostic/open-ant-cli/internal/config"
 	"github.com/spf13/cobra"
@@ -54,10 +55,22 @@ func resolvedAPIKey() string {
 	return config.ResolveAPIKey(apiKeyFlag)
 }
 
+// useLocalClaude returns true if OPENANT_LOCAL_CLAUDE=true is set,
+// meaning the local Claude Code session will be used for authentication.
+func useLocalClaude() bool {
+	return strings.EqualFold(os.Getenv("OPENANT_LOCAL_CLAUDE"), "true")
+}
+
 // requireAPIKey returns the resolved API key or exits with a helpful error
 // telling the user how to configure one. Use this in commands that make
 // LLM calls (enhance, analyze, verify, scan, dynamic-test).
+//
+// When OPENANT_LOCAL_CLAUDE=true, the API key is not required — the local
+// Claude Code session handles authentication.
 func requireAPIKey() string {
+	if useLocalClaude() {
+		return "" // local Claude Code mode — no API key needed
+	}
 	key := resolvedAPIKey()
 	if key != "" {
 		return key
@@ -65,6 +78,7 @@ func requireAPIKey() string {
 	fmt.Fprintln(os.Stderr, "Error: No API key configured.")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "Run:  openant set-api-key <your-anthropic-api-key>")
+	fmt.Fprintln(os.Stderr, "  Or: export OPENANT_LOCAL_CLAUDE=true  (to use local Claude Code session)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "You can get an API key at https://console.anthropic.com/settings/keys")
 	os.Exit(2)
