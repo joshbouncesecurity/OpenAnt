@@ -184,6 +184,7 @@ def cmd_analyze(args):
                 limit=args.limit,
                 model=args.model,
                 exploitable_only=args.exploitable_only,
+                fresh=args.fresh,
             )
 
             ctx.summary = {
@@ -270,6 +271,7 @@ def cmd_verify(args):
                 analyzer_output_path=args.analyzer_output,
                 app_context_path=args.app_context,
                 repo_path=args.repo_path,
+                fresh=args.fresh,
             )
 
             ctx.summary = {
@@ -543,6 +545,8 @@ def main():
     analyze_p.add_argument("--exploitable-only", action="store_true",
                            help="Only analyze units classified as exploitable/vulnerable by enhancer")
     analyze_p.add_argument("--model", choices=["opus", "sonnet"], default="opus", help="Model (default: opus)")
+    analyze_p.add_argument("--fresh", action="store_true",
+                           help="Ignore checkpoint and reanalyze all units from scratch")
     analyze_p.set_defaults(func=cmd_analyze)
 
     # ---------------------------------------------------------------
@@ -554,6 +558,8 @@ def main():
     verify_p.add_argument("--app-context", help="Path to application_context.json")
     verify_p.add_argument("--repo-path", help="Path to the repository")
     verify_p.add_argument("--output", "-o", help="Output directory (default: temp dir)")
+    verify_p.add_argument("--fresh", action="store_true",
+                          help="Ignore checkpoint and reverify all findings from scratch")
     verify_p.set_defaults(func=cmd_verify)
 
     # ---------------------------------------------------------------
