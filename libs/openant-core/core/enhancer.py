@@ -100,8 +100,20 @@ def enhance_dataset(
     units = dataset.get("units", [])
     print(f"[Enhance] Units to enhance: {len(units)}", file=sys.stderr)
 
-    # Set up progress reporter
-    progress = ProgressReporter("Enhance", len(units), tracker=tracker)
+    # Count already-resumed units from checkpoint (if any)
+    resumed_count = 0
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        try:
+            with open(checkpoint_path) as f:
+                cp_data = json.load(f)
+            for cp_unit in cp_data.get("units", []):
+                if cp_unit.get("agent_context") and not cp_unit["agent_context"].get("error"):
+                    resumed_count += 1
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Set up progress reporter (start counter at resumed count so numbering is correct)
+    progress = ProgressReporter("Enhance", len(units), tracker=tracker, completed=resumed_count)
 
     def _on_unit_done(unit_id: str, classification: str, unit_elapsed: float):
         progress.report(

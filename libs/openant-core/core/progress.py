@@ -52,12 +52,13 @@ class ProgressReporter:
         total: int,
         tracker=None,
         summary_interval: int | None = None,
+        completed: int = 0,
     ):
         self.step_name = step_name
         self.total = total
         self.tracker = tracker
         self.start_time = time.monotonic()
-        self.completed = 0
+        self.completed = completed
 
         # Width for the counter so alignment stays consistent
         self._width = len(str(total))
