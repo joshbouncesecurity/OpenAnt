@@ -371,7 +371,10 @@ def enhance_unit_with_agent(
         additional_files = set()
 
         for func_info in result.include_functions:
-            func_id = func_info.get("id", "")
+            if isinstance(func_info, str):
+                func_id = func_info
+            else:
+                func_id = func_info.get("id", "")
             func_data = index.get_function(func_id)
 
             if func_data and func_data.get("code"):
