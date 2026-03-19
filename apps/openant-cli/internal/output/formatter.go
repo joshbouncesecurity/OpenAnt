@@ -73,12 +73,12 @@ func PrintScanSummary(data map[string]any) {
 
 	PrintHeader("Scan Results")
 
-	total := intFromAny(metrics["total_units"])
-	vulnerable := intFromAny(metrics["vulnerable_units"])
-	safe := intFromAny(metrics["safe_units"])
-	unclear := intFromAny(metrics["unclear_units"])
-	verified := intFromAny(metrics["verified_vulnerable"])
-	falsePos := intFromAny(metrics["false_positives"])
+	total := intFromAny(metrics["total"])
+	vulnerable := intFromAny(metrics["vulnerable"])
+	safe := intFromAny(metrics["safe"])
+	unclear := intFromAny(metrics["inconclusive"])
+	verified := intFromAny(metrics["verified"])
+	falsePos := intFromAny(metrics["stage2_disagreed"])
 
 	PrintKeyValue("Total units analyzed", fmt.Sprintf("%d", total))
 
@@ -171,9 +171,11 @@ func PrintAnalyzeSummary(data map[string]any) {
 	}
 
 	PrintHeader("Analysis Results")
-	total := intFromAny(metrics["total_units"])
-	vulnerable := intFromAny(metrics["vulnerable_units"])
-	safe := intFromAny(metrics["safe_units"])
+	total := intFromAny(metrics["total"])
+	vulnerable := intFromAny(metrics["vulnerable"])
+	safe := intFromAny(metrics["safe"])
+
+	errors := intFromAny(metrics["errors"])
 
 	PrintKeyValue("Total units", fmt.Sprintf("%d", total))
 	if vulnerable > 0 {
@@ -182,6 +184,9 @@ func PrintAnalyzeSummary(data map[string]any) {
 		green.Printf("  Vulnerable: 0\n")
 	}
 	PrintKeyValue("Safe", fmt.Sprintf("%d", safe))
+	if errors > 0 {
+		yellow.Printf("  Errors: %d\n", errors)
+	}
 
 	if path, ok := data["results_path"].(string); ok {
 		PrintKeyValue("Output", path)
