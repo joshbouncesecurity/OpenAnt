@@ -484,6 +484,10 @@ class ContextEnhancer:
             if checkpoint_path:
                 self._save_checkpoint(dataset, checkpoint_path, agentic_stats)
 
+        # Clean up checkpoint on success
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+
         # Get token usage stats
         token_stats = self.tracker.get_totals()
 
