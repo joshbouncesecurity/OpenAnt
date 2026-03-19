@@ -292,6 +292,30 @@ class TestEnhanceAutoCheckpoint:
         assert result2.units_enhanced == 3
         assert result2.usage.total_cost_usd == 0.0
 
+    @patch("utilities.agentic_enhancer.enhance_unit_with_agent", side_effect=_mock_enhance_unit)
+    @patch("utilities.agentic_enhancer.load_index_from_file")
+    def test_enhance_cleans_up_checkpoint_on_success(self, mock_load_index, mock_enhance, tmp_path):
+        """Checkpoint file is removed after all units complete successfully."""
+        mock_load_index.return_value = MagicMock(get_statistics=lambda: {"total_functions": 0, "total_files": 0})
+
+        from core.enhancer import enhance_dataset
+        dataset_path, ao_path = _make_dataset(tmp_path)
+        output_path = str(tmp_path / "enhanced.json")
+        checkpoint_path = str(tmp_path / "enhanced_checkpoint.json")
+
+        result = enhance_dataset(
+            dataset_path=dataset_path,
+            output_path=output_path,
+            analyzer_output_path=ao_path,
+            repo_path=str(tmp_path),
+            mode="agentic",
+            checkpoint_path=checkpoint_path,
+        )
+
+        assert result.units_enhanced == 3
+        assert os.path.exists(output_path)
+        assert not os.path.exists(checkpoint_path), "Checkpoint should be cleaned up after successful completion"
+
     @patch("utilities.context_enhancer.ContextEnhancer.enhance_unit")
     def test_enhance_single_shot_no_checkpoint(self, mock_enhance_unit, tmp_path):
         """Call with mode='single-shot' — no checkpoint file is created."""
