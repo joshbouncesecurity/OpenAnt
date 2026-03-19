@@ -323,7 +323,19 @@ def cmd_build_output(args):
 
             ctx.outputs = {"pipeline_output_path": path}
 
-        _output_json(success({"pipeline_output_path": path}))
+        # Read back the generated file to extract findings count
+        findings_count = 0
+        try:
+            with open(path) as f:
+                pipeline_data = json.load(f)
+            findings_count = len(pipeline_data.get("findings", []))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        _output_json(success({
+            "pipeline_output_path": path,
+            "findings_count": findings_count,
+        }))
         return 0
 
     except Exception as e:
