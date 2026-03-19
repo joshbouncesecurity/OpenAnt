@@ -5,11 +5,11 @@ Report Generator - generates security reports and disclosure documents from pipe
 import json
 import os
 import sys
-import anthropic
 from pathlib import Path
 from dotenv import load_dotenv
 
 from .schema import validate_pipeline_output, ValidationError
+from utilities.llm_client import create_anthropic_client, create_message
 
 load_dotenv()
 
@@ -18,10 +18,13 @@ MODEL = "claude-opus-4-6"
 
 
 def _check_api_key():
-    """Check that ANTHROPIC_API_KEY is set."""
+    """Check that ANTHROPIC_API_KEY or OPENANT_LOCAL_CLAUDE is configured."""
+    if os.environ.get("OPENANT_LOCAL_CLAUDE", "").lower() == "true":
+        return
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("Error: ANTHROPIC_API_KEY environment variable not set.", file=sys.stderr)
         print("Set it with: export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
+        print("Or use: export OPENANT_LOCAL_CLAUDE=true", file=sys.stderr)
         sys.exit(1)
 
 
@@ -56,26 +59,25 @@ def _compact_for_summary(pipeline_data: dict) -> dict:
 def generate_summary_report(pipeline_data: dict) -> str:
     """Generate a summary report from pipeline data."""
     _check_api_key()
-    client = anthropic.Anthropic()
+    client = create_anthropic_client()
 
     summary_data = _compact_for_summary(pipeline_data)
     system_prompt = load_prompt("system")
     user_prompt = load_prompt("summary").replace("{pipeline_data}", json.dumps(summary_data, indent=2))
 
-    response = client.messages.create(
+    return create_message(
+        client,
         model=MODEL,
         max_tokens=4096,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
     )
 
-    return response.content[0].text
-
 
 def generate_disclosure(vulnerability_data: dict, product_name: str) -> str:
     """Generate a disclosure document for a single vulnerability."""
     _check_api_key()
-    client = anthropic.Anthropic()
+    client = create_anthropic_client()
 
     system_prompt = load_prompt("system")
 
@@ -85,14 +87,13 @@ def generate_disclosure(vulnerability_data: dict, product_name: str) -> str:
         json.dumps(vuln_with_product, indent=2)
     )
 
-    response = client.messages.create(
+    return create_message(
+        client,
         model=MODEL,
         max_tokens=4096,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
     )
-
-    return response.content[0].text
 
 
 def generate_all(pipeline_path: str, output_dir: str) -> None:
