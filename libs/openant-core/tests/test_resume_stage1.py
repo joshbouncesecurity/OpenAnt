@@ -158,10 +158,11 @@ def _mock_enhance_unit_fail_after(n):
     return _mock
 
 
+@patch("utilities.llm_client.create_anthropic_client")
 class TestEnhanceAutoCheckpoint:
-    @patch("utilities.agentic_enhancer.enhance_unit_with_agent", side_effect=_mock_enhance_unit)
-    @patch("utilities.agentic_enhancer.load_index_from_file")
-    def test_enhance_auto_generates_checkpoint_path(self, mock_load_index, mock_enhance, tmp_path):
+    @patch("utilities.context_enhancer.enhance_unit_with_agent", side_effect=_mock_enhance_unit)
+    @patch("utilities.context_enhancer.load_index_from_file")
+    def test_enhance_auto_generates_checkpoint_path(self, mock_load_index, mock_enhance, mock_api_client, tmp_path):
         """Call enhance_dataset() without checkpoint_path — checkpoint file is created."""
         mock_load_index.return_value = MagicMock(get_statistics=lambda: {"total_functions": 0, "total_files": 0})
 
@@ -177,16 +178,14 @@ class TestEnhanceAutoCheckpoint:
             mode="agentic",
         )
 
-        # Auto-generated checkpoint path should be next to output
-        expected_checkpoint = str(tmp_path / "enhanced_checkpoint.json")
         # Checkpoint is cleaned up on success in the enhancer, but the
         # important thing is the mechanism worked (output exists)
         assert os.path.exists(output_path)
         assert result.units_enhanced > 0
 
-    @patch("utilities.agentic_enhancer.load_index_from_file")
-    def test_enhance_resumes_from_auto_checkpoint(self, mock_load_index, tmp_path):
-        """Run enhance partway (fail after N units), re-run, verify resume."""
+    @patch("utilities.context_enhancer.load_index_from_file")
+    def test_enhance_resumes_from_checkpoint(self, mock_load_index, mock_api_client, tmp_path):
+        """Re-running enhance with a checkpoint skips already-processed units."""
         mock_load_index.return_value = MagicMock(get_statistics=lambda: {"total_functions": 0, "total_files": 0})
 
         from core.enhancer import enhance_dataset
@@ -194,10 +193,10 @@ class TestEnhanceAutoCheckpoint:
         output_path = str(tmp_path / "enhanced.json")
         checkpoint_path = str(tmp_path / "enhanced_checkpoint.json")
 
-        # First run: succeed for 2 units, then fail
+        # First run: all succeed, creates output with checkpoint along the way
         with patch(
-            "utilities.agentic_enhancer.enhance_unit_with_agent",
-            side_effect=_mock_enhance_unit_fail_after(2),
+            "utilities.context_enhancer.enhance_unit_with_agent",
+            side_effect=_mock_enhance_unit,
         ):
             result = enhance_dataset(
                 dataset_path=dataset_path,
@@ -207,13 +206,22 @@ class TestEnhanceAutoCheckpoint:
                 mode="agentic",
                 checkpoint_path=checkpoint_path,
             )
+        assert result.units_enhanced == 5
 
-        # Checkpoint should exist (3 errors but 2 succeeded + checkpoint saved)
-        assert os.path.exists(checkpoint_path)
+        # Simulate a partial checkpoint by writing back only 2 processed units
+        with open(output_path) as f:
+            completed = json.load(f)
+        for unit in completed["units"][2:]:
+            unit.pop("agent_context", None)
+        completed["metadata"]["checkpoint"] = True
+        with open(checkpoint_path, "w") as f:
+            json.dump(completed, f)
+        # Remove output so enhance doesn't skip entirely
+        os.remove(output_path)
 
-        # Second run: all succeed, should resume from checkpoint
+        # Second run: should only process the 3 unfinished units
         with patch(
-            "utilities.agentic_enhancer.enhance_unit_with_agent",
+            "utilities.context_enhancer.enhance_unit_with_agent",
             side_effect=_mock_enhance_unit,
         ) as mock_enhance:
             result = enhance_dataset(
@@ -225,13 +233,12 @@ class TestEnhanceAutoCheckpoint:
                 checkpoint_path=checkpoint_path,
             )
 
-        # The already-processed units should have been skipped
-        # (mock_enhance should have been called fewer times than total units)
-        assert mock_enhance.call_count < 5
+        # Only the 3 unfinished units should have been processed
+        assert mock_enhance.call_count == 3
 
-    @patch("utilities.agentic_enhancer.enhance_unit_with_agent", side_effect=_mock_enhance_unit)
-    @patch("utilities.agentic_enhancer.load_index_from_file")
-    def test_enhance_fresh_deletes_checkpoint(self, mock_load_index, mock_enhance, tmp_path):
+    @patch("utilities.context_enhancer.enhance_unit_with_agent", side_effect=_mock_enhance_unit)
+    @patch("utilities.context_enhancer.load_index_from_file")
+    def test_enhance_fresh_deletes_checkpoint(self, mock_load_index, mock_enhance, mock_api_client, tmp_path):
         """Create a checkpoint file, call with fresh=True, verify checkpoint is deleted."""
         mock_load_index.return_value = MagicMock(get_statistics=lambda: {"total_functions": 0, "total_files": 0})
 
@@ -257,9 +264,9 @@ class TestEnhanceAutoCheckpoint:
         assert mock_enhance.call_count == 3
         assert result.units_enhanced == 3
 
-    @patch("utilities.agentic_enhancer.enhance_unit_with_agent", side_effect=_mock_enhance_unit)
-    @patch("utilities.agentic_enhancer.load_index_from_file")
-    def test_enhance_skips_when_already_complete(self, mock_load_index, mock_enhance, tmp_path):
+    @patch("utilities.context_enhancer.enhance_unit_with_agent", side_effect=_mock_enhance_unit)
+    @patch("utilities.context_enhancer.load_index_from_file")
+    def test_enhance_skips_when_already_complete(self, mock_load_index, mock_enhance, mock_api_client, tmp_path):
         """Re-running enhance after success skips processing entirely."""
         mock_load_index.return_value = MagicMock(get_statistics=lambda: {"total_functions": 0, "total_files": 0})
 
@@ -292,8 +299,32 @@ class TestEnhanceAutoCheckpoint:
         assert result2.units_enhanced == 3
         assert result2.usage.total_cost_usd == 0.0
 
+    @patch("utilities.context_enhancer.enhance_unit_with_agent", side_effect=_mock_enhance_unit)
+    @patch("utilities.context_enhancer.load_index_from_file")
+    def test_enhance_cleans_up_checkpoint_on_success(self, mock_load_index, mock_enhance, mock_api_client, tmp_path):
+        """Checkpoint file is removed after all units complete successfully."""
+        mock_load_index.return_value = MagicMock(get_statistics=lambda: {"total_functions": 0, "total_files": 0})
+
+        from core.enhancer import enhance_dataset
+        dataset_path, ao_path = _make_dataset(tmp_path)
+        output_path = str(tmp_path / "enhanced.json")
+        checkpoint_path = str(tmp_path / "enhanced_checkpoint.json")
+
+        result = enhance_dataset(
+            dataset_path=dataset_path,
+            output_path=output_path,
+            analyzer_output_path=ao_path,
+            repo_path=str(tmp_path),
+            mode="agentic",
+            checkpoint_path=checkpoint_path,
+        )
+
+        assert result.units_enhanced == 3
+        assert os.path.exists(output_path)
+        assert not os.path.exists(checkpoint_path), "Checkpoint should be cleaned up after successful completion"
+
     @patch("utilities.context_enhancer.ContextEnhancer.enhance_unit")
-    def test_enhance_single_shot_no_checkpoint(self, mock_enhance_unit, tmp_path):
+    def test_enhance_single_shot_no_checkpoint(self, mock_enhance_unit, mock_api_client, tmp_path):
         """Call with mode='single-shot' — no checkpoint file is created."""
         mock_enhance_unit.side_effect = lambda unit, all_units: unit
 
