@@ -21,6 +21,7 @@ def enhance_dataset(
     repo_path: str | None = None,
     mode: str = "agentic",
     checkpoint_path: str | None = None,
+    fresh: bool = False,
     model: str = "sonnet",
 ) -> EnhanceResult:
     """Enhance a parsed dataset with security context.
@@ -39,6 +40,45 @@ def enhance_dataset(
     """
     # Reset tracking for this step
     tracking.reset_tracking()
+
+    # Auto-generate checkpoint path next to output file (agentic mode only)
+    if checkpoint_path is None and mode == "agentic":
+        checkpoint_path = os.path.splitext(output_path)[0] + "_checkpoint.json"
+
+    # If fresh, delete existing checkpoint and output
+    if fresh:
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+    else:
+        # If output already exists and no checkpoint (i.e. previous run completed),
+        # skip enhancement entirely — use --fresh to force a rerun.
+        has_checkpoint = checkpoint_path and os.path.exists(checkpoint_path)
+        if os.path.exists(output_path) and not has_checkpoint:
+            print(f"[Enhance] Already complete: {output_path}", file=sys.stderr)
+            print("[Enhance] Use --fresh to reprocess all units from scratch.", file=sys.stderr)
+
+            # Load the existing output to build the result
+            with open(output_path) as f:
+                enhanced = json.load(f)
+
+            context_key = "agent_context" if mode == "agentic" else "llm_context"
+            classifications = {}
+            error_count = 0
+            for unit in enhanced.get("units", []):
+                ctx = unit.get(context_key, {})
+                if ctx.get("error"):
+                    error_count += 1
+                    continue
+                cls = ctx.get("security_classification", "unknown")
+                classifications[cls] = classifications.get(cls, 0) + 1
+
+            return EnhanceResult(
+                enhanced_dataset_path=output_path,
+                units_enhanced=len(enhanced.get("units", [])) - error_count,
+                error_count=error_count,
+                classifications=classifications,
+                usage=UsageInfo(),
+            )
 
     model_id = "claude-sonnet-4-20250514" if model == "sonnet" else "claude-opus-4-6"
     print(f"[Enhance] Mode: {mode}", file=sys.stderr)
@@ -60,8 +100,20 @@ def enhance_dataset(
     units = dataset.get("units", [])
     print(f"[Enhance] Units to enhance: {len(units)}", file=sys.stderr)
 
-    # Set up progress reporter
-    progress = ProgressReporter("Enhance", len(units), tracker=tracker)
+    # Count already-resumed units from checkpoint (if any)
+    resumed_count = 0
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        try:
+            with open(checkpoint_path) as f:
+                cp_data = json.load(f)
+            for cp_unit in cp_data.get("units", []):
+                if cp_unit.get("agent_context") and not cp_unit["agent_context"].get("error"):
+                    resumed_count += 1
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Set up progress reporter (start counter at resumed count so numbering is correct)
+    progress = ProgressReporter("Enhance", len(units), tracker=tracker, completed=resumed_count)
 
     def _on_unit_done(unit_id: str, classification: str, unit_elapsed: float):
         progress.report(
@@ -93,9 +145,9 @@ def enhance_dataset(
     progress.finish()
 
     # Write enhanced dataset
+    from core.utils import atomic_write_json
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(enhanced, f, indent=2)
+    atomic_write_json(output_path, enhanced)
 
     print(f"[Enhance] Enhanced dataset: {output_path}", file=sys.stderr)
 

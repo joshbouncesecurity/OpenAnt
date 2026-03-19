@@ -257,8 +257,8 @@ class StepReport:
 
     def write(self, output_dir: str) -> str:
         """Write ``{step}.report.json`` to *output_dir*. Returns the path."""
+        from core.utils import atomic_write_json
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, f"{self.step}.report.json")
-        with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        atomic_write_json(path, self.to_dict())
         return path

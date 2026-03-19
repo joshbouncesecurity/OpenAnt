@@ -484,6 +484,10 @@ class ContextEnhancer:
             if checkpoint_path:
                 self._save_checkpoint(dataset, checkpoint_path, agentic_stats)
 
+        # Clean up checkpoint on success
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+
         # Get token usage stats
         token_stats = self.tracker.get_totals()
 
@@ -517,14 +521,15 @@ class ContextEnhancer:
 
     def _save_checkpoint(self, dataset: dict, checkpoint_path: str, agentic_stats: dict):
         """Save checkpoint to disk after each unit is processed."""
+        from core.utils import atomic_write_json
+
         # Update metadata before saving
         dataset["metadata"] = dataset.get("metadata", {})
         dataset["metadata"]["checkpoint"] = True
         dataset["metadata"]["agentic_stats"] = agentic_stats
         dataset["metadata"]["token_usage"] = self.tracker.get_totals()
 
-        with open(checkpoint_path, 'w') as f:
-            json.dump(dataset, f, indent=2)
+        atomic_write_json(checkpoint_path, dataset)
 
     def get_token_stats(self) -> dict:
         """
