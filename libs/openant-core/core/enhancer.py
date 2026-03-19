@@ -45,9 +45,40 @@ def enhance_dataset(
     if checkpoint_path is None and mode == "agentic":
         checkpoint_path = os.path.splitext(output_path)[0] + "_checkpoint.json"
 
-    # If fresh, delete existing checkpoint
-    if fresh and checkpoint_path and os.path.exists(checkpoint_path):
-        os.remove(checkpoint_path)
+    # If fresh, delete existing checkpoint and output
+    if fresh:
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+    else:
+        # If output already exists and no checkpoint (i.e. previous run completed),
+        # skip enhancement entirely — use --fresh to force a rerun.
+        has_checkpoint = checkpoint_path and os.path.exists(checkpoint_path)
+        if os.path.exists(output_path) and not has_checkpoint:
+            print(f"[Enhance] Already complete: {output_path}", file=sys.stderr)
+            print("[Enhance] Use --fresh to reprocess all units from scratch.", file=sys.stderr)
+
+            # Load the existing output to build the result
+            with open(output_path) as f:
+                enhanced = json.load(f)
+
+            context_key = "agent_context" if mode == "agentic" else "llm_context"
+            classifications = {}
+            error_count = 0
+            for unit in enhanced.get("units", []):
+                ctx = unit.get(context_key, {})
+                if ctx.get("error"):
+                    error_count += 1
+                    continue
+                cls = ctx.get("security_classification", "unknown")
+                classifications[cls] = classifications.get(cls, 0) + 1
+
+            return EnhanceResult(
+                enhanced_dataset_path=output_path,
+                units_enhanced=len(enhanced.get("units", [])) - error_count,
+                error_count=error_count,
+                classifications=classifications,
+                usage=UsageInfo(),
+            )
 
     model_id = "claude-sonnet-4-20250514" if model == "sonnet" else "claude-opus-4-6"
     print(f"[Enhance] Mode: {mode}", file=sys.stderr)
