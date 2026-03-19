@@ -129,6 +129,7 @@ class ScanResult:
     usage: UsageInfo = field(default_factory=UsageInfo)
     step_reports: list = field(default_factory=list)
     skipped_steps: list = field(default_factory=list)
+    resumed_steps: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -149,6 +150,7 @@ class ScanResult:
             "usage": self.usage.to_dict(),
             "step_reports": self.step_reports,
             "skipped_steps": self.skipped_steps,
+            "resumed_steps": self.resumed_steps,
         }
 
 

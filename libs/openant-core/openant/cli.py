@@ -51,6 +51,7 @@ def cmd_scan(args):
             enhance=not args.no_enhance,
             enhance_mode=args.enhance_mode,
             dynamic_test=args.dynamic_test,
+            fresh=args.fresh,
         )
 
         _output_json(success(result.to_dict()))
@@ -487,6 +488,8 @@ def main():
     scan_p.add_argument("--no-skip-tests", action="store_true", help="Include test files in parsing (default: tests are skipped)")
     scan_p.add_argument("--limit", type=int, help="Max units to analyze")
     scan_p.add_argument("--model", choices=["opus", "sonnet"], default="opus", help="Model (default: opus)")
+    scan_p.add_argument("--fresh", action="store_true",
+                        help="Ignore previous progress and rerun all steps from scratch")
     scan_p.set_defaults(func=cmd_scan)
 
     # ---------------------------------------------------------------
