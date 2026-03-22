@@ -125,12 +125,15 @@ def _make_dataset(tmp_path, num_units=3):
 
 
 def _mock_enhance_unit(unit, index, tracker, verbose):
-    """Mock for enhance_unit_with_agent that adds a basic agent_context."""
-    unit["agent_context"] = {
-        "security_classification": "neutral",
-        "confidence": 0.8,
-        "include_functions": [],
-        "agent_metadata": {"iterations": 1},
+    """Mock for enhance_unit_with_agent that returns a patch dict."""
+    return {
+        "agent_context": {
+            "security_classification": "neutral",
+            "confidence": 0.8,
+            "include_functions": [],
+            "agent_metadata": {"iterations": 1},
+        },
+        "code_patches": None,
     }
 
 
@@ -142,11 +145,14 @@ def _mock_enhance_unit_fail_after(n):
         call_count["count"] += 1
         if call_count["count"] > n:
             raise RuntimeError("Simulated LLM failure")
-        unit["agent_context"] = {
-            "security_classification": "neutral",
-            "confidence": 0.8,
-            "include_functions": [],
-            "agent_metadata": {"iterations": 1},
+        return {
+            "agent_context": {
+                "security_classification": "neutral",
+                "confidence": 0.8,
+                "include_functions": [],
+                "agent_metadata": {"iterations": 1},
+            },
+            "code_patches": None,
         }
 
     return _mock

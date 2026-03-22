@@ -38,6 +38,7 @@ from typing import Callable, Optional
 
 from .file_io import read_json
 from .llm_client import TokenTracker, get_global_tracker, create_anthropic_client, create_message
+from .parallel_executor import run_parallel
 
 # Null logger that discards all messages (used when no logger provided)
 _null_logger = logging.getLogger("null_verifier")
@@ -417,6 +418,7 @@ class FindingVerifier:
         code_by_route: dict,
         progress_callback: Optional[Callable] = None,
         checkpoint_path: str | None = None,
+        concurrency: int = 4,
     ) -> list:
         """
         Verify a batch of results with consistency cross-check.
@@ -457,59 +459,79 @@ class FindingVerifier:
                 completed_keys = set()
 
         # Step 1: Individual verification
-        for i, result in enumerate(results):
+        # Report resumed findings
+        pending_results = []
+        for result in results:
             route_key = result.get("route_key", "unknown")
-
             if route_key in completed_keys:
-                # Already verified in previous run
                 if progress_callback:
                     progress_callback(route_key, "(resumed)", 0.0)
-                continue
+            else:
+                pending_results.append(result)
 
+        self._log("info", f"Verifying {len(pending_results)} findings (concurrency={concurrency})")
+
+        def _verify_one(result):
+            """Verify a single finding (called from worker thread)."""
+            start = time.monotonic()
+            route_key = result.get("route_key", "unknown")
+            stage1_finding = result.get("finding", "inconclusive")
+            code = code_by_route.get(route_key, "")
+            verification = self.verify_result(
+                code=code,
+                finding=stage1_finding,
+                attack_vector=result.get("attack_vector"),
+                reasoning=result.get("reasoning", ""),
+                files_included=result.get("files_included", [])
+            )
+            return (verification, time.monotonic() - start)
+
+        def _on_complete(result, verify_output):
+            """Called under lock after successful verification."""
+            verification, unit_elapsed = verify_output
+            route_key = result.get("route_key", "unknown")
             stage1_finding = result.get("finding", "inconclusive")
 
-            self._log("info", f"Verifying finding {i+1}/{len(results)}",
-                      unit_id=route_key, classification=stage1_finding)
+            result["verification"] = verification.to_dict()
 
-            unit_start = time.monotonic()
-            detail = ""
-            try:
-                code = code_by_route.get(route_key, "")
-                verification = self.verify_result(
-                    code=code,
-                    finding=stage1_finding,
-                    attack_vector=result.get("attack_vector"),
-                    reasoning=result.get("reasoning", ""),
-                    files_included=result.get("files_included", [])
-                )
+            if verification.agree:
+                detail = f"agreed:{verification.correct_finding}"
+                self._log("info", f"Verification agreed: {verification.correct_finding}",
+                          unit_id=route_key, total_tokens=verification.total_tokens,
+                          iterations=verification.iterations)
+            else:
+                detail = f"disagreed:{stage1_finding}->{verification.correct_finding}"
+                result["finding"] = verification.correct_finding
+                result["verification_note"] = f"Changed from {stage1_finding} to {verification.correct_finding}"
+                self._log("info", f"Verification disagreed: {stage1_finding} -> {verification.correct_finding}",
+                          unit_id=route_key, total_tokens=verification.total_tokens,
+                          iterations=verification.iterations)
 
-                result["verification"] = verification.to_dict()
-
-                if verification.agree:
-                    detail = f"agreed:{verification.correct_finding}"
-                    self._log("info", f"Verification agreed: {verification.correct_finding}",
-                              unit_id=route_key, total_tokens=verification.total_tokens,
-                              iterations=verification.iterations)
-                else:
-                    detail = f"disagreed:{stage1_finding}->{verification.correct_finding}"
-                    result["finding"] = verification.correct_finding
-                    result["verification_note"] = f"Changed from {stage1_finding} to {verification.correct_finding}"
-                    self._log("info", f"Verification disagreed: {stage1_finding} -> {verification.correct_finding}",
-                              unit_id=route_key, total_tokens=verification.total_tokens,
-                              iterations=verification.iterations)
-
-            except Exception as e:
-                detail = "error"
-                self._log("error", f"Verification failed", unit_id=route_key, error=str(e))
-
-            # Save checkpoint after each finding
             if checkpoint_path:
                 completed_keys.add(route_key)
                 _save_verify_checkpoint(checkpoint_path, results, completed_keys)
-
-            unit_elapsed = time.monotonic() - unit_start
             if progress_callback:
                 progress_callback(route_key, detail, unit_elapsed)
+
+        def _on_error(result, exc):
+            """Called under lock when verification raises."""
+            route_key = result.get("route_key", "unknown")
+            self._log("error", f"Verification failed", unit_id=route_key, error=str(exc))
+            # Do NOT add to completed_keys — errored findings will be
+            # retried on resume (matching analyze/enhance behavior).
+            # We intentionally skip checkpoint save here: the last successful
+            # _on_complete already persisted all completed work. If the process
+            # dies after this error, the errored finding is simply reprocessed.
+            if progress_callback:
+                progress_callback(route_key, "error", 0.0)
+
+        run_parallel(
+            items=pending_results,
+            process_fn=_verify_one,
+            concurrency=concurrency,
+            on_complete=_on_complete,
+            on_error=_on_error,
+        )
 
         # Step 2: Consistency cross-check runs on ALL results (including resumed ones)
         results = self._check_consistency(results, code_by_route)

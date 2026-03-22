@@ -11,6 +11,8 @@ import json
 import os
 import shutil
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -19,6 +21,7 @@ from core import tracking
 from core.progress import ProgressReporter
 from core.utils import atomic_write_json
 from utilities.file_io import read_json
+from utilities.parallel_executor import run_parallel
 
 # Import existing analysis machinery
 from utilities.llm_client import AnthropicClient, get_global_tracker
@@ -87,6 +90,7 @@ def run_analysis(
     checkpoint_path: str | None = None,
     fresh: bool = False,
     skip_errors: bool = False,
+    concurrency: int = 4,
 ) -> AnalyzeResult:
     """Run Stage 1 vulnerability detection on a dataset.
 
@@ -240,65 +244,91 @@ def run_analysis(
     tracker = get_global_tracker()
     progress = ProgressReporter("Analyze", len(units), tracker=tracker, completed=len(completed_ids))
 
-    print(f"[Analyze] Analyzing {len(units)} units...", file=sys.stderr)
+    print(f"[Analyze] Analyzing {len(units)} units (concurrency={concurrency})...", file=sys.stderr)
 
+    # Filter to only units that need processing
+    pending_units = []
     for i, unit in enumerate(units):
         uid = unit.get("id", f"unit_{i}")
         if uid in completed_ids:
-            print(f"  [{i+1}/{len(units)}] {uid} -> (resumed)", file=sys.stderr)
+            print(f"  {uid} -> (resumed)", file=sys.stderr)
             continue
+        pending_units.append(unit)
 
-        print(f"  [{i+1}/{len(units)}] {uid}", file=sys.stderr, end="")
+    # Per-thread client/corrector to avoid last_call race on shared AnthropicClient.
+    # Using threading.local() so each thread creates once and reuses.
+    _thread_local = threading.local()
 
-        try:
-            result = analyze_unit(
-                client, unit,
-                use_multifile=True,
-                json_corrector=json_corrector,
-                app_context=app_context,
-            )
+    def _analyze_one(unit):
+        """Process a single unit (called from worker thread).
 
-            # Ensure unit_id is always present
-            result["unit_id"] = uid
+        Returns (result_dict, elapsed_seconds) tuple.
+        """
+        start = time.monotonic()
+        if not hasattr(_thread_local, "client"):
+            _thread_local.client = AnthropicClient(model=model_id)
+            _thread_local.corrector = JSONCorrector(_thread_local.client)
+        result = analyze_unit(
+            _thread_local.client, unit,
+            use_multifile=True,
+            json_corrector=_thread_local.corrector,
+            app_context=app_context,
+        )
+        return (result, time.monotonic() - start)
 
-            # Ensure finding field is always set (may be None after JSON correction)
-            if not result.get("finding") and result.get("verdict"):
-                result["finding"] = result["verdict"].lower()
+    def _on_complete(unit, analyze_output):
+        """Called under lock after successful analysis.
 
-            results.append(result)
+        All mutations to shared state (results, counts, code_by_route,
+        checkpoint) happen here under run_parallel's lock.
+        """
+        result, unit_elapsed = analyze_output
+        uid = unit.get("id", "unknown")
+        result["unit_id"] = uid
+        if not result.get("finding") and result.get("verdict"):
+            result["finding"] = result["verdict"].lower()
 
-            # Track code for verify step (code_by_route persisted in results.json)
-            route_key = result.get("route_key", uid)
-            code_field = unit.get("code", {})
-            if isinstance(code_field, dict):
-                code_by_route[route_key] = code_field.get("primary_code", "")
-            else:
-                code_by_route[route_key] = code_field
+        results.append(result)
 
-            # Count verdicts
-            finding = result.get("finding", "error")
-            if finding in counts:
-                counts[finding] += 1
-            elif result.get("verdict") == "ERROR":
-                counts["errors"] += 1
+        route_key = result.get("route_key", uid)
+        code_field = unit.get("code", {})
+        if isinstance(code_field, dict):
+            code_by_route[route_key] = code_field.get("primary_code", "")
+        else:
+            code_by_route[route_key] = code_field
 
-            print(f" -> {finding}", file=sys.stderr)
-
-        except Exception as e:
-            print(f" -> ERROR: {e}", file=sys.stderr)
+        finding = result.get("finding", "error")
+        if finding in counts:
+            counts[finding] += 1
+        elif result.get("verdict") == "ERROR":
             counts["errors"] += 1
-            results.append({
-                "unit_id": uid,
-                "verdict": "ERROR",
-                "finding": "error",
-                "error": str(e),
-            })
 
-        # Save checkpoint after each unit
         if checkpoint_path:
             _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id)
+        progress.report(unit_label=uid, detail=finding, unit_elapsed=unit_elapsed)
 
-        progress.report(unit_label=uid, detail=results[-1].get("finding", "error"))
+    def _on_error(unit, exc):
+        """Called under lock when analysis raises."""
+        uid = unit.get("id", "unknown")
+        print(f"  {uid} -> ERROR: {exc}", file=sys.stderr)
+        counts["errors"] += 1
+        results.append({
+            "unit_id": uid,
+            "verdict": "ERROR",
+            "finding": "error",
+            "error": str(exc),
+        })
+        if checkpoint_path:
+            _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id)
+        progress.report(unit_label=uid, detail="error")
+
+    run_parallel(
+        items=pending_units,
+        process_fn=_analyze_one,
+        concurrency=concurrency,
+        on_complete=_on_complete,
+        on_error=_on_error,
+    )
 
     progress.finish()
 
@@ -330,6 +360,9 @@ def run_analysis(
         print(f"[Analyze] Consistency check error (non-fatal): {e}", file=sys.stderr)
 
     # --- Write results ---
+    # Sort by unit_id for deterministic output regardless of concurrency
+    results.sort(key=lambda r: r.get("unit_id", ""))
+
     experiment_result = {
         "dataset": os.path.basename(dataset_path),
         "model": model_id,

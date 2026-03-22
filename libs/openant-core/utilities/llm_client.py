@@ -24,9 +24,16 @@ Usage:
 
 import os
 import sys
+import threading
 from typing import Optional
 import anthropic
 from dotenv import load_dotenv
+
+# Load .env once at module level. Previously called in AnthropicClient.__init__,
+# but load_dotenv() mutates os.environ which is not thread-safe under concurrent
+# client construction. Runs at import time — tests that need to control env
+# should mock os.environ or patch before importing this module.
+load_dotenv()
 
 from .local_claude import LocalClaudeClient, is_enabled as _use_local_claude
 
@@ -46,14 +53,20 @@ class TokenTracker:
     """
 
     def __init__(self):
+        self._lock = threading.Lock()
         self.reset()
 
     def reset(self):
-        """Reset all counters."""
-        self.calls = []
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-        self.total_cost_usd = 0.0
+        """Reset all counters.
+
+        Acquires the lock to avoid racing with concurrent record_call().
+        Typically called between pipeline stages, not during.
+        """
+        with self._lock:
+            self.calls = []
+            self.total_input_tokens = 0
+            self.total_output_tokens = 0
+            self.total_cost_usd = 0.0
 
     @property
     def total_tokens(self) -> int:
@@ -87,11 +100,12 @@ class TokenTracker:
             "cost_usd": round(total_cost, 6)
         }
 
-        # Update totals
-        self.calls.append(call_record)
-        self.total_input_tokens += input_tokens
-        self.total_output_tokens += output_tokens
-        self.total_cost_usd += total_cost
+        # Update totals (thread-safe for concurrent LLM calls)
+        with self._lock:
+            self.calls.append(call_record)
+            self.total_input_tokens += input_tokens
+            self.total_output_tokens += output_tokens
+            self.total_cost_usd += total_cost
 
         return call_record
 
@@ -102,14 +116,15 @@ class TokenTracker:
         Returns:
             Dict with totals and per-call breakdown
         """
-        return {
-            "total_calls": len(self.calls),
-            "total_input_tokens": self.total_input_tokens,
-            "total_output_tokens": self.total_output_tokens,
-            "total_tokens": self.total_input_tokens + self.total_output_tokens,
-            "total_cost_usd": round(self.total_cost_usd, 6),
-            "calls": self.calls
-        }
+        with self._lock:
+            return {
+                "total_calls": len(self.calls),
+                "total_input_tokens": self.total_input_tokens,
+                "total_output_tokens": self.total_output_tokens,
+                "total_tokens": self.total_input_tokens + self.total_output_tokens,
+                "total_cost_usd": round(self.total_cost_usd, 6),
+                "calls": list(self.calls)
+            }
 
     def get_totals(self) -> dict:
         """
@@ -118,13 +133,14 @@ class TokenTracker:
         Returns:
             Dict with totals only
         """
-        return {
-            "total_calls": len(self.calls),
-            "total_input_tokens": self.total_input_tokens,
-            "total_output_tokens": self.total_output_tokens,
-            "total_tokens": self.total_input_tokens + self.total_output_tokens,
-            "total_cost_usd": round(self.total_cost_usd, 6)
-        }
+        with self._lock:
+            return {
+                "total_calls": len(self.calls),
+                "total_input_tokens": self.total_input_tokens,
+                "total_output_tokens": self.total_output_tokens,
+                "total_tokens": self.total_input_tokens + self.total_output_tokens,
+                "total_cost_usd": round(self.total_cost_usd, 6)
+            }
 
 
 # Global tracker instance for session-wide tracking
@@ -189,8 +205,6 @@ class AnthropicClient:
                    Use "claude-sonnet-4-20250514" for cost-effective option.
             tracker: Optional TokenTracker instance. Uses global tracker if not provided.
         """
-        load_dotenv()
-
         self.client = create_anthropic_client()
         self.model = model
         self.tracker = tracker or _global_tracker

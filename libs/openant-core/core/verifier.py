@@ -37,6 +37,7 @@ def run_verification(
     repo_path: str | None = None,
     checkpoint_path: str | None = None,
     fresh: bool = False,
+    concurrency: int = 4,
 ) -> VerifyResult:
     """Run Stage 2 attacker-simulation verification on Stage 1 results.
 
@@ -199,6 +200,7 @@ def run_verification(
             vulnerable_results, code_by_route,
             progress_callback=_on_finding_done,
             checkpoint_path=checkpoint_path,
+            concurrency=concurrency,
         )
     except Exception as e:
         print(f"[Verify] ERROR during batch verification: {e}", file=sys.stderr)

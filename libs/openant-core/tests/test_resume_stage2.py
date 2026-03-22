@@ -170,7 +170,7 @@ def _verify_patches():
     mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
     mock_verifier_instance = MagicMock()
     mock_verifier_instance.verify_batch.side_effect = (
-        lambda results, cbr, progress_callback=None, checkpoint_path=None:
+        lambda results, cbr, **kwargs:
         _mock_verify_batch(results, mock_result)
     )
 
@@ -240,6 +240,7 @@ class TestAnalyzeCheckpoint:
                     dataset_path=dataset_path,
                     output_dir=output_dir,
                     checkpoint_path=checkpoint_path,
+                    concurrency=1,  # serial to guarantee exact crash point
                 )
 
         # Checkpoint should exist with the 2 completed units
@@ -257,6 +258,7 @@ class TestAnalyzeCheckpoint:
                 dataset_path=dataset_path,
                 output_dir=output_dir,
                 checkpoint_path=checkpoint_path,
+                concurrency=1,  # serial to match first run's checkpoint
             )
 
         # Only 3 remaining units should have been analyzed
@@ -435,7 +437,7 @@ class TestVerifyCheckpoint:
         mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
         mock_verifier = MagicMock()
         mock_verifier.verify_batch.side_effect = (
-            lambda results, cbr, progress_callback=None, checkpoint_path=None:
+            lambda results, cbr, **kwargs:
             _mock_verify_batch(results, mock_result)
         )
 
@@ -462,7 +464,7 @@ class TestVerifyCheckpoint:
         mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
         mock_verifier = MagicMock()
         mock_verifier.verify_batch.side_effect = (
-            lambda results, cbr, progress_callback=None, checkpoint_path=None:
+            lambda results, cbr, **kwargs:
             _mock_verify_batch(results, mock_result)
         )
 
@@ -506,7 +508,7 @@ class TestVerifyCheckpoint:
         mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
         mock_verifier = MagicMock()
         mock_verifier.verify_batch.side_effect = (
-            lambda results, cbr, progress_callback=None, checkpoint_path=None:
+            lambda results, cbr, **kwargs:
             _mock_verify_batch(results, mock_result)
         )
 
@@ -544,7 +546,7 @@ class TestVerifyCheckpoint:
         mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
         mock_verifier = MagicMock()
         mock_verifier.verify_batch.side_effect = (
-            lambda results, cbr, progress_callback=None, checkpoint_path=None:
+            lambda results, cbr, **kwargs:
             _mock_verify_batch(results, mock_result)
         )
 

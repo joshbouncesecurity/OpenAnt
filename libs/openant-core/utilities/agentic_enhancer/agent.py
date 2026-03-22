@@ -362,8 +362,9 @@ def enhance_unit_with_agent(
         static_callers=static_callers
     )
 
-    # Add result to unit
-    unit["agent_context"] = result.to_dict()
+    # Build a patch dict instead of mutating unit directly.
+    # The caller applies these under a lock for thread safety.
+    patch = {"agent_context": result.to_dict(), "code_patches": None}
 
     # Assemble additional code if functions were identified
     if result.include_functions:
@@ -385,22 +386,37 @@ def enhance_unit_with_agent(
                 if colon_idx > 0:
                     additional_files.add(func_id[:colon_idx])
 
-        # Append to primary_code with file boundaries
+        # Build code assembly patch (instead of mutating unit["code"] directly)
         if additional_code and isinstance(unit.get("code"), dict):
             FILE_BOUNDARY = "\n\n// ========== File Boundary ==========\n\n"
             current_code = unit["code"].get("primary_code", "")
             assembled = current_code + FILE_BOUNDARY + FILE_BOUNDARY.join(additional_code)
-            unit["code"]["primary_code"] = assembled
 
-            # Update metadata
-            origin = unit["code"].get("primary_origin", {})
+            origin = dict(unit["code"].get("primary_origin", {}))
             current_files = set(origin.get("files_included", []))
             origin["files_included"] = list(current_files | additional_files)
             origin["enhanced"] = True
             origin["enhanced_length"] = len(assembled)
-            unit["code"]["primary_origin"] = origin
 
-    return unit
+            patch["code_patches"] = {
+                "primary_code": assembled,
+                "primary_origin": origin,
+            }
+
+    return patch
+
+
+def apply_enhance_patch(unit: dict, patch: dict) -> None:
+    """Apply an enhance patch to a unit dict (must be called under lock).
+
+    Args:
+        unit: The unit dict to mutate.
+        patch: Dict returned by ``enhance_unit_with_agent()``.
+    """
+    unit["agent_context"] = patch["agent_context"]
+    if patch["code_patches"] and isinstance(unit.get("code"), dict):
+        unit["code"]["primary_code"] = patch["code_patches"]["primary_code"]
+        unit["code"]["primary_origin"] = patch["code_patches"]["primary_origin"]
 
 
 def create_reachability_context(

@@ -24,6 +24,8 @@ from typing import Callable, Optional
 from .file_io import read_json, write_json
 from .llm_client import AnthropicClient, TokenTracker, get_global_tracker
 from .agentic_enhancer import enhance_unit_with_agent, load_index_from_file
+from .agentic_enhancer.agent import apply_enhance_patch
+from .parallel_executor import run_parallel
 
 
 # Null logger that discards all messages (used when no logger provided)
@@ -344,6 +346,7 @@ class ContextEnhancer:
         checkpoint_path: str = None,
         progress_callback: Optional[Callable] = None,
         skip_errors: bool = False,
+        concurrency: int = 4,
     ) -> dict:
         """
         Enhance all units using agentic approach with tool use.
@@ -439,55 +442,81 @@ class ContextEnhancer:
                     agentic_stats["neutral_found"] += 1
                 agentic_stats["total_iterations"] += agent_ctx.get("agent_metadata", {}).get("iterations", 0)
 
-        processed_this_run = 0
-        for i, unit in enumerate(units):
-            unit_id = unit.get("id")
+        # Filter to pending units
+        pending_units = [u for u in units if u.get("id") not in processed_ids]
 
-            # Skip already-processed units
-            if unit_id in processed_ids:
-                continue
+        self._log("info", f"Processing {len(pending_units)} units (concurrency={concurrency})")
 
-            processed_this_run += 1
-            if processed_this_run % batch_size == 1 or processed_this_run == 1:
-                self._log("info", f"Processing unit {agentic_stats['units_processed'] + 1}/{total}", unit_id=unit_id)
+        def _enhance_one(unit):
+            """Process a single unit (called from worker thread).
 
-            unit_start = time.monotonic()
-            try:
-                enhance_unit_with_agent(unit, index, self.tracker, verbose)
-                agentic_stats["units_processed"] += 1
+            Returns (patch_dict, elapsed_seconds) tuple.
+            """
+            start = time.monotonic()
+            patch = enhance_unit_with_agent(unit, index, self.tracker, verbose)
+            return (patch, time.monotonic() - start)
 
-                agent_ctx = unit.get("agent_context", {})
-                if agent_ctx.get("include_functions"):
-                    agentic_stats["units_with_context"] += 1
-                    agentic_stats["functions_added"] += len(agent_ctx["include_functions"])
+        def _on_complete(unit, enhance_output):
+            """Called under lock after successful enhancement.
 
-                classification = agent_ctx.get("security_classification", "neutral")
-                if classification == "security_control":
-                    agentic_stats["security_controls_found"] += 1
-                elif classification == "vulnerable":
-                    agentic_stats["vulnerable_found"] += 1
-                else:
-                    agentic_stats["neutral_found"] += 1
+            Note: all mutations to shared state (unit dict, agentic_stats,
+            checkpoint) happen here under run_parallel's lock — not in
+            the worker thread. This is what makes the parallel path safe.
+            """
+            patch, unit_elapsed = enhance_output
+            unit_id = unit.get("id", "?")
 
-                agentic_stats["total_iterations"] += agent_ctx.get("agent_metadata", {}).get("iterations", 0)
+            # Apply patch to unit under lock (thread-safe)
+            apply_enhance_patch(unit, patch)
+            agentic_stats["units_processed"] += 1
 
-            except Exception as e:
-                classification = "error"
-                agentic_stats["errors"] += 1
-                self._log("error", "Error processing unit", unit_id=unit_id, error=str(e))
-                unit["agent_context"] = {
-                    "error": str(e),
-                    "security_classification": "neutral",
-                    "confidence": 0.0
-                }
+            agent_ctx = patch["agent_context"]
+            if agent_ctx.get("include_functions"):
+                agentic_stats["units_with_context"] += 1
+                agentic_stats["functions_added"] += len(agent_ctx["include_functions"])
 
-            unit_elapsed = time.monotonic() - unit_start
-            if progress_callback:
-                progress_callback(unit_id or "?", classification, unit_elapsed)
+            classification = agent_ctx.get("security_classification", "neutral")
+            if classification == "security_control":
+                agentic_stats["security_controls_found"] += 1
+            elif classification == "vulnerable":
+                agentic_stats["vulnerable_found"] += 1
+            else:
+                agentic_stats["neutral_found"] += 1
 
-            # Save checkpoint after each unit
+            agentic_stats["total_iterations"] += agent_ctx.get("agent_metadata", {}).get("iterations", 0)
+
             if checkpoint_path:
                 self._save_checkpoint(dataset, checkpoint_path, agentic_stats)
+            if progress_callback:
+                progress_callback(unit_id, classification, unit_elapsed)
+
+        def _on_error(unit, exc):
+            """Called under lock when enhancement raises.
+
+            Mutates unit directly (no patch) since the error case is simple
+            and doesn't involve code assembly. This is safe because
+            run_parallel holds the lock during this callback.
+            """
+            unit_id = unit.get("id", "?")
+            agentic_stats["errors"] += 1
+            self._log("error", "Error processing unit", unit_id=unit_id, error=str(exc))
+            unit["agent_context"] = {
+                "error": str(exc),
+                "security_classification": "neutral",
+                "confidence": 0.0
+            }
+            if checkpoint_path:
+                self._save_checkpoint(dataset, checkpoint_path, agentic_stats)
+            if progress_callback:
+                progress_callback(unit_id, "error", 0.0)
+
+        run_parallel(
+            items=pending_units,
+            process_fn=_enhance_one,
+            concurrency=concurrency,
+            on_complete=_on_complete,
+            on_error=_on_error,
+        )
 
         # Clean up checkpoint on success
         if checkpoint_path and os.path.exists(checkpoint_path):
