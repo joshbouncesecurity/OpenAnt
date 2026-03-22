@@ -46,6 +46,12 @@ def run_utf8(*args, **kwargs) -> subprocess.CompletedProcess:
     Wrapper around ``subprocess.run`` that sets ``encoding='utf-8'`` and
     ``errors='replace'`` when ``text=True`` is passed, preventing charmap
     decode errors on Windows.
+
+    Note: ``errors='replace'`` substitutes U+FFFD for invalid bytes in
+    stdout/stderr rather than raising.  This is intentional — subprocess
+    output is used for status display and diagnostics, not for security
+    analysis (parser results are read from JSON files separately).
+    Callers can override with ``errors='strict'`` if needed.
     """
     if kwargs.get("text"):
         kwargs.setdefault("encoding", "utf-8")
