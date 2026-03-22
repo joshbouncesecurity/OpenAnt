@@ -56,7 +56,16 @@ func runReport(cmd *cobra.Command, args []string) {
 	// Apply project defaults
 	if ctx != nil {
 		if reportOutput == "" {
-			reportOutput = filepath.Join(ctx.ScanDir, "report")
+			switch reportFormat {
+			case "summary":
+				reportOutput = filepath.Join(ctx.ScanDir, "SUMMARY_REPORT.md")
+			case "disclosure":
+				reportOutput = filepath.Join(ctx.ScanDir, "disclosures")
+			case "csv":
+				reportOutput = filepath.Join(ctx.ScanDir, "report.csv")
+			default:
+				reportOutput = filepath.Join(ctx.ScanDir, "report.html")
+			}
 		}
 		if reportPipelineOutput == "" {
 			reportPipelineOutput = ctx.scanFile("pipeline_output.json")
