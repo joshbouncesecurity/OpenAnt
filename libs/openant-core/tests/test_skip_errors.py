@@ -128,6 +128,18 @@ class TestEnhanceAutoRetryErrors:
         # Should have called enhance_dataset_agentic (not returned early)
         mock_enhancer_instance.enhance_dataset_agentic.assert_called_once()
 
+        # Verify checkpoint path was passed through
+        call_kwargs = mock_enhancer_instance.enhance_dataset_agentic.call_args
+        checkpoint_path = str(tmp_path / "dataset_enhanced_checkpoint.json")
+        assert call_kwargs.kwargs.get("checkpoint_path") == checkpoint_path
+
+        # Verify the checkpoint file was created (copied from output)
+        # and contains the errored unit
+        cp_data = read_json(checkpoint_path)
+        errored = [u for u in cp_data["units"] if u.get("agent_context", {}).get("error")]
+        assert len(errored) == 1
+        assert errored[0]["id"] == "unit_1"
+
     def test_completed_run_with_errors_skips_with_flag(self, tmp_path):
         """Completed output with errors + skip_errors=True -> returns early."""
         dataset_path = _make_dataset(tmp_path, num_units=3)

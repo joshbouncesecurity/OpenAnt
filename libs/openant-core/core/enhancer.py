@@ -7,6 +7,7 @@ for both agentic and single-shot enhancement modes.
 
 import json
 import os
+import shutil
 import sys
 
 from core.schemas import EnhanceResult, UsageInfo
@@ -73,7 +74,6 @@ def enhance_dataset(
             if error_count > 0 and not skip_errors:
                 # Copy completed output to checkpoint path so the existing
                 # checkpoint resume logic re-processes errored units.
-                import shutil
                 shutil.copy2(output_path, checkpoint_path)
                 print(f"[Enhance] Retrying {error_count} errored units from: {output_path}", file=sys.stderr)
             else:

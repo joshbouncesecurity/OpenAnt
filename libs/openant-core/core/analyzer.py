@@ -9,6 +9,7 @@ Stage 2 verification is handled separately by ``core.verifier``.
 
 import json
 import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -108,12 +109,14 @@ def run_analysis(
         if os.path.exists(results_path) and not has_checkpoint:
             # Check if there are errored units worth retrying
             experiment = read_json(results_path)
-            error_count = experiment.get("metrics", {}).get("errors", 0)
+            error_count = sum(
+                1 for r in experiment.get("results", [])
+                if r.get("verdict") == "ERROR"
+            )
 
             if error_count > 0 and not skip_errors:
                 # Copy completed results to checkpoint path so the resume
                 # logic re-processes errored units.
-                import shutil
                 shutil.copy2(results_path, checkpoint_path)
                 print(f"[Analyze] Retrying {error_count} errored units from: {results_path}", file=sys.stderr)
             else:
