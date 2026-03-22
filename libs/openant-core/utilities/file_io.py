@@ -7,11 +7,15 @@ explicitly, preventing ``'charmap' codec can't decode byte ...`` errors.
 """
 
 import json
+import os
 import subprocess
-from typing import Any
+from typing import Any, Union
+
+# Accept str, Path, or any os.PathLike
+PathLike = Union[str, os.PathLike]
 
 
-def open_utf8(path: str, mode: str = "r", **kwargs):
+def open_utf8(path: PathLike, mode: str = "r", **kwargs):
     """Open a file with UTF-8 encoding by default.
 
     Drop-in replacement for ``open()`` that sets ``encoding='utf-8'`` unless
@@ -23,13 +27,13 @@ def open_utf8(path: str, mode: str = "r", **kwargs):
     return open(path, mode, **kwargs)
 
 
-def read_json(path: str) -> Any:
+def read_json(path: PathLike) -> Any:
     """Read and parse a JSON file using UTF-8 encoding."""
     with open_utf8(path, "r") as f:
         return json.load(f)
 
 
-def write_json(path: str, data: Any, **kwargs) -> None:
+def write_json(path: PathLike, data: Any, **kwargs) -> None:
     """Write data as JSON to a file using UTF-8 encoding."""
     kwargs.setdefault("indent", 2)
     with open_utf8(path, "w") as f:

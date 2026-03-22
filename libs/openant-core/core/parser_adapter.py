@@ -27,7 +27,7 @@ _LANGUAGES_CONFIG = Path(__file__).parent.parent.parent.parent / "config" / "lan
 
 def _load_language_config() -> dict:
     """Load language detection config from the shared config/languages.json."""
-    return read_json(str(_LANGUAGES_CONFIG))
+    return read_json(_LANGUAGES_CONFIG)
 
 
 def detect_language(repo_path: str) -> str:

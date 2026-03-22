@@ -988,23 +988,22 @@ class GoPipelineTest:
 
         # Save results summary
         results_file = os.path.join(self.output_dir, 'pipeline_results.json')
-        with open_utf8(results_file, 'w') as f:
-            # Remove stdout/stderr from saved results (too verbose)
-            clean_results = {
-                'repository': self.results['repository'],
-                'test_time': self.results['test_time'],
-                'processing_level': self.results.get('processing_level', 'all'),
-                'success': self.results.get('success', False),
-                'stages': {}
+        # Remove stdout/stderr from saved results (too verbose)
+        clean_results = {
+            'repository': self.results['repository'],
+            'test_time': self.results['test_time'],
+            'processing_level': self.results.get('processing_level', 'all'),
+            'success': self.results.get('success', False),
+            'stages': {}
+        }
+        for stage_name, stage_result in self.results['stages'].items():
+            clean_results['stages'][stage_name] = {
+                'success': stage_result.get('success', False),
+                'elapsed_seconds': stage_result.get('elapsed_seconds', 0),
+                'output_file': stage_result.get('output_file'),
+                'summary': stage_result.get('summary', {})
             }
-            for stage_name, stage_result in self.results['stages'].items():
-                clean_results['stages'][stage_name] = {
-                    'success': stage_result.get('success', False),
-                    'elapsed_seconds': stage_result.get('elapsed_seconds', 0),
-                    'output_file': stage_result.get('output_file'),
-                    'summary': stage_result.get('summary', {})
-                }
-            json.dump(clean_results, f, indent=2)
+        write_json(results_file, clean_results)
 
         print(f"Results summary: {results_file}")
 
