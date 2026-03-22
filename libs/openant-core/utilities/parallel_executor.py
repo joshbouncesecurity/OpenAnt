@@ -62,16 +62,24 @@ def run_parallel(
 def _run_serial(items, process_fn, on_complete, on_error):
     """Run items one at a time with no threading."""
     results = []
-    for item in items:
-        try:
-            result = process_fn(item)
-        except Exception as exc:
-            if on_error:
-                on_error(item, exc)
-            continue
-        if on_complete:
-            on_complete(item, result)
-        results.append((item, result))
+    try:
+        for item in items:
+            try:
+                result = process_fn(item)
+            except Exception as exc:
+                if on_error:
+                    on_error(item, exc)
+                continue
+            if on_complete:
+                on_complete(item, result)
+            results.append((item, result))
+    except KeyboardInterrupt:
+        print(
+            "\n[parallel] Interrupted — checkpoint is valid, "
+            "resume will skip completed units.",
+            file=sys.stderr,
+        )
+        raise
     return results
 
 

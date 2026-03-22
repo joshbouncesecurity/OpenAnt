@@ -32,9 +32,13 @@ def _output_json(data: dict):
 
 
 def _validate_concurrency(value: int) -> int:
-    """Validate and return concurrency value, warn if using local mode."""
+    """Validate and return concurrency value, warn if using local mode.
+
+    Raises ValueError (not ArgumentTypeError) so the caller's except
+    Exception handler produces a clean JSON error via _output_json().
+    """
     if value < 1:
-        raise argparse.ArgumentTypeError(f"--concurrency must be >= 1, got {value}")
+        raise ValueError(f"--concurrency must be >= 1, got {value}")
     if value > 1:
         from utilities.local_claude import is_enabled as _use_local_claude
         if _use_local_claude():

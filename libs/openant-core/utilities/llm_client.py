@@ -57,11 +57,16 @@ class TokenTracker:
         self.reset()
 
     def reset(self):
-        """Reset all counters."""
-        self.calls = []
-        self.total_input_tokens = 0
-        self.total_output_tokens = 0
-        self.total_cost_usd = 0.0
+        """Reset all counters.
+
+        Acquires the lock to avoid racing with concurrent record_call().
+        Typically called between pipeline stages, not during.
+        """
+        with self._lock:
+            self.calls = []
+            self.total_input_tokens = 0
+            self.total_output_tokens = 0
+            self.total_cost_usd = 0.0
 
     @property
     def total_tokens(self) -> int:
