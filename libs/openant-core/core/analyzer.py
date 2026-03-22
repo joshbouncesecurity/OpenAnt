@@ -277,7 +277,11 @@ def run_analysis(
         return (result, time.monotonic() - start)
 
     def _on_complete(unit, analyze_output):
-        """Called under lock after successful analysis."""
+        """Called under lock after successful analysis.
+
+        All mutations to shared state (results, counts, code_by_route,
+        checkpoint) happen here under run_parallel's lock.
+        """
         result, unit_elapsed = analyze_output
         uid = unit.get("id", "unknown")
         result["unit_id"] = uid

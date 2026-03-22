@@ -29,7 +29,10 @@ from typing import Optional
 import anthropic
 from dotenv import load_dotenv
 
-# Load .env once at module level (not thread-safe if called per-thread)
+# Load .env once at module level. Previously called in AnthropicClient.__init__,
+# but load_dotenv() mutates os.environ which is not thread-safe under concurrent
+# client construction. Runs at import time — tests that need to control env
+# should mock os.environ or patch before importing this module.
 load_dotenv()
 
 from .local_claude import LocalClaudeClient, is_enabled as _use_local_claude

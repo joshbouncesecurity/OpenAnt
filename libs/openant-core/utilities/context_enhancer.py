@@ -457,7 +457,12 @@ class ContextEnhancer:
             return (patch, time.monotonic() - start)
 
         def _on_complete(unit, enhance_output):
-            """Called under lock after successful enhancement."""
+            """Called under lock after successful enhancement.
+
+            Note: all mutations to shared state (unit dict, agentic_stats,
+            checkpoint) happen here under run_parallel's lock — not in
+            the worker thread. This is what makes the parallel path safe.
+            """
             patch, unit_elapsed = enhance_output
             unit_id = unit.get("id", "?")
 
@@ -486,7 +491,12 @@ class ContextEnhancer:
                 progress_callback(unit_id, classification, unit_elapsed)
 
         def _on_error(unit, exc):
-            """Called under lock when enhancement raises."""
+            """Called under lock when enhancement raises.
+
+            Mutates unit directly (no patch) since the error case is simple
+            and doesn't involve code assembly. This is safe because
+            run_parallel holds the lock during this callback.
+            """
             unit_id = unit.get("id", "?")
             agentic_stats["errors"] += 1
             self._log("error", "Error processing unit", unit_id=unit_id, error=str(exc))
