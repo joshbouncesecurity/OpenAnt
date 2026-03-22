@@ -107,7 +107,17 @@ class ReportResult:
     format: str = "html"
 
     def to_dict(self) -> dict:
-        return asdict(self)
+        d = asdict(self)
+        # Add format-specific path key expected by the Go CLI formatter
+        fmt_key = {
+            "html": "html_path",
+            "csv": "csv_path",
+            "summary": "summary_path",
+            "disclosure": "disclosure_path",
+        }.get(self.format)
+        if fmt_key:
+            d[fmt_key] = self.output_path
+        return d
 
 
 @dataclass

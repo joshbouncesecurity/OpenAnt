@@ -475,7 +475,12 @@ def cmd_report(args):
                 _output_json(error(f"Unknown format: {fmt}"))
                 return 2
 
-            ctx.summary = {"format": fmt}
+            summary = {"format": fmt}
+            if pipeline_output_path and os.path.isfile(pipeline_output_path):
+                po = read_json(pipeline_output_path)
+                summary["findings_count"] = len(po.get("findings", []))
+                summary["results"] = po.get("results", {})
+            ctx.summary = summary
             ctx.outputs = {"output_path": output_path}
 
         _output_json(success(result.to_dict()))
