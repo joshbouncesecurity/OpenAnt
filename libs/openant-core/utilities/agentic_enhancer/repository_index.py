@@ -19,6 +19,8 @@ import re
 from pathlib import Path
 from typing import Optional
 
+from ..file_io import read_json
+
 
 class RepositoryIndex:
     """
@@ -283,7 +285,6 @@ def load_index_from_file(analyzer_output_path: str, repo_path: str = None) -> Re
     Returns:
         RepositoryIndex instance
     """
-    with open(analyzer_output_path, 'r') as f:
-        analyzer_output = json.load(f)
+    analyzer_output = read_json(analyzer_output_path)
 
     return RepositoryIndex(analyzer_output, repo_path)

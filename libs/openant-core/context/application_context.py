@@ -29,8 +29,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
+
+from utilities.file_io import read_json, write_json
+from utilities.llm_client import create_anthropic_client, create_message
 
 # Load environment variables
 load_dotenv()
@@ -503,8 +505,9 @@ def generate_application_context(
 
     # Call LLM
     print(f"Generating context with {model}...", file=sys.stderr)
-    client = Anthropic()
-    response = client.messages.create(
+    client = create_anthropic_client()
+    response_text = create_message(
+        client,
         model=model,
         max_tokens=2000,
         messages=[{
@@ -512,9 +515,6 @@ def generate_application_context(
             "content": CONTEXT_GENERATION_PROMPT.format(sources=sources_text)
         }]
     )
-
-    # Parse response
-    response_text = response.content[0].text
 
     # Extract JSON from response
     json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)
@@ -545,8 +545,7 @@ def save_context(context: ApplicationContext, output_path: Path) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w') as f:
-        json.dump(asdict(context), f, indent=2)
+    write_json(output_path, asdict(context))
 
     print(f"Context saved to {output_path}", file=sys.stderr)
 
@@ -560,8 +559,7 @@ def load_context(input_path: Path) -> ApplicationContext:
     Returns:
         ApplicationContext loaded from file.
     """
-    with open(input_path) as f:
-        data = json.load(f)
+    data = read_json(input_path)
 
     # Mark as manual to skip validation (already validated when saved)
     original_source = data.get('source', 'llm')

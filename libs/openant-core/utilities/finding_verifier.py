@@ -30,14 +30,14 @@ Classes:
 
 import json
 import logging
+import os
 import re
 import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-import anthropic
-
-from .llm_client import TokenTracker, get_global_tracker
+from .file_io import read_json
+from .llm_client import TokenTracker, get_global_tracker, create_anthropic_client, create_message
 
 # Null logger that discards all messages (used when no logger provided)
 _null_logger = logging.getLogger("null_verifier")
@@ -266,7 +266,7 @@ class FindingVerifier:
         self.verbose = verbose
         self.app_context = app_context
         self.tool_executor = ToolExecutor(index)
-        self.client = anthropic.Anthropic()
+        self.client = create_anthropic_client()
         self.logger = logger or _null_logger
         self._use_logger = logger is not None
 
@@ -416,6 +416,7 @@ class FindingVerifier:
         results: list,
         code_by_route: dict,
         progress_callback: Optional[Callable] = None,
+        checkpoint_path: str | None = None,
     ) -> list:
         """
         Verify a batch of results with consistency cross-check.
@@ -425,13 +426,46 @@ class FindingVerifier:
             code_by_route: Dict mapping route_key to code
             progress_callback: Optional callback(unit_id, detail, unit_elapsed)
                 called after each finding is verified.
+            checkpoint_path: Path to save/resume checkpoint. When provided,
+                previously verified findings are restored and skipped.
 
         Returns:
             Updated results with verification and consistency check
         """
+        # Load checkpoint if resuming
+        completed_keys = set()
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            try:
+                cp = read_json(checkpoint_path)
+                completed_keys = set(cp.get("completed_keys", []))
+                # Restore verification data from checkpoint into results
+                cp_by_key = {r["route_key"]: r for r in cp.get("verified", [])}
+                for result in results:
+                    key = result.get("route_key", "unknown")
+                    if key in cp_by_key:
+                        result["verification"] = cp_by_key[key]["verification"]
+                        if "finding" in cp_by_key[key]:
+                            result["finding"] = cp_by_key[key]["finding"]
+                        if "verification_note" in cp_by_key[key]:
+                            result["verification_note"] = cp_by_key[key]["verification_note"]
+                print(f"[Verify] Resuming: {len(completed_keys)} findings already verified",
+                      file=__import__('sys').stderr)
+            except (json.JSONDecodeError, OSError):
+                # Corrupt checkpoint — start fresh
+                print("[Verify] Corrupt checkpoint, starting fresh",
+                      file=__import__('sys').stderr)
+                completed_keys = set()
+
         # Step 1: Individual verification
         for i, result in enumerate(results):
             route_key = result.get("route_key", "unknown")
+
+            if route_key in completed_keys:
+                # Already verified in previous run
+                if progress_callback:
+                    progress_callback(route_key, "(resumed)", 0.0)
+                continue
+
             stage1_finding = result.get("finding", "inconclusive")
 
             self._log("info", f"Verifying finding {i+1}/{len(results)}",
@@ -468,12 +502,21 @@ class FindingVerifier:
                 detail = "error"
                 self._log("error", f"Verification failed", unit_id=route_key, error=str(e))
 
+            # Save checkpoint after each finding
+            if checkpoint_path:
+                completed_keys.add(route_key)
+                _save_verify_checkpoint(checkpoint_path, results, completed_keys)
+
             unit_elapsed = time.monotonic() - unit_start
             if progress_callback:
                 progress_callback(route_key, detail, unit_elapsed)
 
-        # Step 2: Consistency cross-check
+        # Step 2: Consistency cross-check runs on ALL results (including resumed ones)
         results = self._check_consistency(results, code_by_route)
+
+        # Clean up checkpoint on success
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
 
         return results
 
@@ -729,3 +772,23 @@ class FindingVerifier:
             except Exception:
                 pass
         return None
+
+
+def _save_verify_checkpoint(checkpoint_path: str, results: list, completed_keys: set):
+    """Save verify checkpoint using atomic writes."""
+    from core.utils import atomic_write_json
+    # Only save results that have been verified (have verification data)
+    verified = []
+    for r in results:
+        key = r.get("route_key", "unknown")
+        if key in completed_keys and "verification" in r:
+            verified.append({
+                "route_key": key,
+                "verification": r["verification"],
+                "finding": r.get("finding"),
+                "verification_note": r.get("verification_note"),
+            })
+    atomic_write_json(checkpoint_path, {
+        "completed_keys": list(completed_keys),
+        "verified": verified,
+    })

@@ -72,6 +72,7 @@ class AnalysisMetrics:
     vulnerable: int = 0
     bypassable: int = 0
     inconclusive: int = 0
+    insufficient_context: int = 0
     protected: int = 0
     safe: int = 0
     errors: int = 0
@@ -139,6 +140,7 @@ class ScanResult:
     usage: UsageInfo = field(default_factory=UsageInfo)
     step_reports: list = field(default_factory=list)
     skipped_steps: list = field(default_factory=list)
+    resumed_steps: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -159,6 +161,7 @@ class ScanResult:
             "usage": self.usage.to_dict(),
             "step_reports": self.step_reports,
             "skipped_steps": self.skipped_steps,
+            "resumed_steps": self.resumed_steps,
         }
 
 
@@ -267,8 +270,8 @@ class StepReport:
 
     def write(self, output_dir: str) -> str:
         """Write ``{step}.report.json`` to *output_dir*. Returns the path."""
+        from core.utils import atomic_write_json
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, f"{self.step}.report.json")
-        with open(path, "w") as f:
-            json.dump(self.to_dict(), f, indent=2)
+        atomic_write_json(path, self.to_dict())
         return path

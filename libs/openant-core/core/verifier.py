@@ -13,6 +13,8 @@ from pathlib import Path
 from core.schemas import VerifyResult, UsageInfo
 from core import tracking
 from core.progress import ProgressReporter
+from core.utils import atomic_write_json
+from utilities.file_io import read_json
 
 from utilities.llm_client import TokenTracker, get_global_tracker
 from utilities.finding_verifier import FindingVerifier
@@ -33,6 +35,8 @@ def run_verification(
     analyzer_output_path: str,
     app_context_path: str | None = None,
     repo_path: str | None = None,
+    checkpoint_path: str | None = None,
+    fresh: bool = False,
 ) -> VerifyResult:
     """Run Stage 2 attacker-simulation verification on Stage 1 results.
 
@@ -46,19 +50,71 @@ def run_verification(
             repository index / tool use).
         app_context_path: Optional path to ``application_context.json``.
         repo_path: Optional path to the repository root (passed to index).
+        checkpoint_path: Path to save/resume checkpoint. Auto-generated if None.
+        fresh: If True, delete existing checkpoint and reverify all findings.
 
     Returns:
         VerifyResult with paths, counts, and usage info.
     """
     os.makedirs(output_dir, exist_ok=True)
 
+    verified_path = os.path.join(output_dir, "results_verified.json")
+
+    # Auto-generate checkpoint path
+    if checkpoint_path is None:
+        checkpoint_path = os.path.join(output_dir, "verify_checkpoint.json")
+
+    # Handle fresh mode
+    if fresh:
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+    else:
+        # Skip-when-already-complete
+        has_checkpoint = os.path.exists(checkpoint_path)
+        if os.path.exists(verified_path) and not has_checkpoint:
+            print(f"[Verify] Already complete: {verified_path}", file=sys.stderr)
+            print("[Verify] Use --fresh to reverify all findings from scratch.", file=sys.stderr)
+
+            verified_data = read_json(verified_path)
+
+            # Count from existing results
+            agreed = 0
+            disagreed = 0
+            confirmed_vulnerabilities = 0
+            findings_input = 0
+            for r in verified_data.get("results", []):
+                # Count vulnerable/bypassable findings as input
+                # (matches the fresh verification path's filtering logic)
+                finding = r.get("finding", r.get("verdict", "")).lower()
+                if finding in ("vulnerable", "bypassable"):
+                    findings_input += 1
+
+                verification = r.get("verification")
+                if verification is None:
+                    continue
+                if verification.get("agree", False):
+                    agreed += 1
+                    if finding in ("vulnerable", "bypassable"):
+                        confirmed_vulnerabilities += 1
+                else:
+                    disagreed += 1
+
+            return VerifyResult(
+                verified_results_path=verified_path,
+                findings_input=findings_input,
+                findings_verified=findings_input,
+                agreed=agreed,
+                disagreed=disagreed,
+                confirmed_vulnerabilities=confirmed_vulnerabilities,
+                usage=UsageInfo(),
+            )
+
     # Reset tracking for this verification run
     tracking.reset_tracking()
 
     # Load Stage 1 results
     print(f"[Verify] Loading results: {results_path}", file=sys.stderr)
-    with open(results_path) as f:
-        experiment = json.load(f)
+    experiment = read_json(results_path)
 
     all_results = experiment.get("results", [])
     code_by_route = experiment.get("code_by_route", {})
@@ -75,7 +131,6 @@ def run_verification(
 
     if findings_input == 0:
         # Nothing to verify — write empty verified results
-        verified_path = os.path.join(output_dir, "results_verified.json")
         _write_verified_results(verified_path, experiment, all_results, [])
         return VerifyResult(
             verified_results_path=verified_path,
@@ -120,8 +175,17 @@ def run_verification(
     print(f"[Verify] Running Stage 2 attacker simulation on {findings_input} findings...",
           file=sys.stderr)
 
+    # Count resumed findings for progress offset
+    resumed_count = 0
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        try:
+            cp = read_json(checkpoint_path)
+            resumed_count = len(cp.get("completed_keys", []))
+        except (json.JSONDecodeError, OSError):
+            pass
+
     # Set up progress reporter
-    progress = ProgressReporter("Verify", findings_input, tracker=tracker)
+    progress = ProgressReporter("Verify", findings_input, tracker=tracker, completed=resumed_count)
 
     def _on_finding_done(unit_id: str, detail: str, unit_elapsed: float):
         progress.report(
@@ -134,6 +198,7 @@ def run_verification(
         verified_results = verifier.verify_batch(
             vulnerable_results, code_by_route,
             progress_callback=_on_finding_done,
+            checkpoint_path=checkpoint_path,
         )
     except Exception as e:
         print(f"[Verify] ERROR during batch verification: {e}", file=sys.stderr)
@@ -176,7 +241,6 @@ def run_verification(
             merged_results.append(r)
 
     # Write results_verified.json
-    verified_path = os.path.join(output_dir, "results_verified.json")
     _write_verified_results(verified_path, experiment, merged_results, verified_results)
 
     print(f"[Verify] Verified results written to {verified_path}", file=sys.stderr)
@@ -206,6 +270,7 @@ def _write_verified_results(
         "verify": True,
         "metrics": experiment.get("metrics", {}),
         "results": merged_results,
+        "code_by_route": experiment.get("code_by_route", {}),
         "confirmed_findings": [
             r for r in verified_only
             if r.get("verification", {}).get("agree", False)
@@ -227,8 +292,7 @@ def _write_verified_results(
 
     output["metrics"] = {"total": len(merged_results), **counts}
 
-    with open(path, "w") as f:
-        json.dump(output, f, indent=2, ensure_ascii=False)
+    atomic_write_json(path, output)
 
 
 def _build_code_by_route(results: list) -> dict:

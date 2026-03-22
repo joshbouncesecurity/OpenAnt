@@ -43,10 +43,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Set
 
-# Add parent directory to path for utilities import
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utilities.context_enhancer import ContextEnhancer
 from utilities.agentic_enhancer import EntryPointDetector, ReachabilityAnalyzer
+from utilities.file_io import read_json, write_json, open_utf8, run_utf8
 
 # Local imports
 from repository_scanner import RepositoryScanner
@@ -139,8 +138,7 @@ class RubyPipelineTest:
 
             # Save scan results
             self.scan_results_file = os.path.join(self.output_dir, 'scan_results.json')
-            with open(self.scan_results_file, 'w') as f:
-                json.dump(scan_result, f, indent=2)
+            write_json(self.scan_results_file, scan_result)
 
             # Stage 2: Extract functions
             print("  [2/4] Extracting functions via tree-sitter...")
@@ -178,13 +176,11 @@ class RubyPipelineTest:
             print(f"         Avg upstream deps: {dataset['statistics']['avg_upstream']}")
 
             # Write dataset
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             # Write analyzer output
             analyzer_output = generator.generate_analyzer_output()
-            with open(self.analyzer_output_file, 'w') as f:
-                json.dump(analyzer_output, f, indent=2)
+            write_json(self.analyzer_output_file, analyzer_output)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -242,8 +238,7 @@ class RubyPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.analyzer_output_file, 'r') as f:
-                analyzer = json.load(f)
+            analyzer = read_json(self.analyzer_output_file)
 
             functions = analyzer.get("functions", {})
 
@@ -262,8 +257,7 @@ class RubyPipelineTest:
                 }
 
             # Build call graph from dataset unit metadata
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             call_graph = {}
             reverse_call_graph = {}
@@ -313,8 +307,7 @@ class RubyPipelineTest:
                 "reduction_percentage": round((1 - len(filtered_units) / original_count) * 100, 1) if original_count > 0 else 0
             }
 
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -379,7 +372,7 @@ class RubyPipelineTest:
                 '--overwrite'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 create_db_cmd,
                 capture_output=True,
                 text=True,
@@ -410,7 +403,7 @@ class RubyPipelineTest:
                 f'codeql/{language}-queries:codeql-suites/{language}-security-extended.qls'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 analyze_cmd,
                 capture_output=True,
                 text=True,
@@ -443,8 +436,7 @@ class RubyPipelineTest:
                 }
                 return False
 
-            with open(sarif_output, 'r') as f:
-                sarif_data = json.load(f)
+            sarif_data = read_json(sarif_output)
 
             self.codeql_findings = []
 
@@ -555,8 +547,7 @@ class RubyPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             # Build mapping of file -> [(start_line, end_line, func_id)]
             file_functions = {}
@@ -605,8 +596,7 @@ class RubyPipelineTest:
                 "reduction_percentage": round((1 - len(filtered_units) / original_count) * 100, 1) if original_count > 0 else 0
             }
 
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -662,8 +652,7 @@ class RubyPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             enhancer = ContextEnhancer()
 
@@ -695,8 +684,7 @@ class RubyPipelineTest:
                     'data_flows_extracted': enhancer.stats['data_flows_extracted']
                 }
 
-            with open(self.dataset_file, 'w') as f:
-                json.dump(enhanced, f, indent=2)
+            write_json(self.dataset_file, enhanced)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -740,8 +728,7 @@ class RubyPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             units = dataset.get("units", [])
             original_count = len(units)
@@ -767,8 +754,7 @@ class RubyPipelineTest:
                 "reduction_percentage": round((1 - len(filtered_units) / original_count) * 100, 1) if original_count > 0 else 0
             }
 
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -908,22 +894,21 @@ class RubyPipelineTest:
 
         # Save results summary
         results_file = os.path.join(self.output_dir, 'pipeline_results.json')
-        with open(results_file, 'w') as f:
-            clean_results = {
-                'repository': self.results['repository'],
-                'test_time': self.results['test_time'],
-                'processing_level': self.results.get('processing_level', 'all'),
-                'success': self.results.get('success', False),
-                'stages': {}
+        clean_results = {
+            'repository': self.results['repository'],
+            'test_time': self.results['test_time'],
+            'processing_level': self.results.get('processing_level', 'all'),
+            'success': self.results.get('success', False),
+            'stages': {}
+        }
+        for stage_name, stage_result in self.results['stages'].items():
+            clean_results['stages'][stage_name] = {
+                'success': stage_result.get('success', False),
+                'elapsed_seconds': stage_result.get('elapsed_seconds', 0),
+                'output_file': stage_result.get('output_file'),
+                'summary': stage_result.get('summary', {})
             }
-            for stage_name, stage_result in self.results['stages'].items():
-                clean_results['stages'][stage_name] = {
-                    'success': stage_result.get('success', False),
-                    'elapsed_seconds': stage_result.get('elapsed_seconds', 0),
-                    'output_file': stage_result.get('output_file'),
-                    'summary': stage_result.get('summary', {})
-                }
-            json.dump(clean_results, f, indent=2)
+        write_json(results_file, clean_results)
 
         print(f"Results summary: {results_file}")
 

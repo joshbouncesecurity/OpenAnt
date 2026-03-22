@@ -9,12 +9,16 @@ Stage 2 verification is handled separately by ``core.verifier``.
 
 import json
 import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
 
 from core.schemas import AnalyzeResult, AnalysisMetrics, UsageInfo
 from core import tracking
+from core.progress import ProgressReporter
+from core.utils import atomic_write_json
+from utilities.file_io import read_json
 
 # Import existing analysis machinery
 from utilities.llm_client import AnthropicClient, get_global_tracker
@@ -36,6 +40,41 @@ except ImportError:
     load_context = None
 
 
+def _recount_metrics(results: list) -> AnalysisMetrics:
+    """Recount verdict metrics from the results list.
+
+    This is more reliable than trusting saved metrics, since older runs
+    may have missed certain verdict types (e.g. insufficient_context).
+    """
+    counts = {
+        "vulnerable": 0,
+        "bypassable": 0,
+        "inconclusive": 0,
+        "insufficient_context": 0,
+        "protected": 0,
+        "safe": 0,
+        "errors": 0,
+    }
+    for r in results:
+        finding = r.get("finding", r.get("verdict", "error").lower())
+        if finding in counts:
+            counts[finding] += 1
+        elif r.get("verdict") == "ERROR":
+            counts["errors"] += 1
+    return AnalysisMetrics(total=len(results), **counts)
+
+
+def _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id):
+    """Save analyze checkpoint using atomic writes."""
+    atomic_write_json(checkpoint_path, {
+        "results": results,
+        "code_by_route": code_by_route,
+        "counts": counts,
+        "dataset": os.path.basename(dataset_path),
+        "model": model_id,
+    })
+
+
 def run_analysis(
     dataset_path: str,
     output_dir: str,
@@ -45,6 +84,9 @@ def run_analysis(
     limit: int | None = None,
     model: str = "opus",
     exploitable_only: bool = False,
+    checkpoint_path: str | None = None,
+    fresh: bool = False,
+    skip_errors: bool = False,
 ) -> AnalyzeResult:
     """Run Stage 1 vulnerability detection on a dataset.
 
@@ -63,11 +105,59 @@ def run_analysis(
         model: "opus" or "sonnet".
         exploitable_only: If True, only analyze units classified as exploitable
             by the agentic enhancer (requires enhanced dataset).
+        checkpoint_path: Path to save/resume checkpoint. Auto-generated if None.
+        fresh: If True, delete existing checkpoint and reanalyze all units.
+        skip_errors: If True, skip errored units instead of retrying them.
+            By default, errored units are automatically retried on re-run.
 
     Returns:
         AnalyzeResult with results path, metrics, and usage.
     """
     os.makedirs(output_dir, exist_ok=True)
+
+    results_path = os.path.join(output_dir, "results.json")
+
+    # Auto-generate checkpoint path
+    if checkpoint_path is None:
+        checkpoint_path = os.path.join(output_dir, "analyze_checkpoint.json")
+
+    # Validate flag combinations
+    if fresh and skip_errors:
+        raise ValueError("Cannot use both --fresh and --skip-errors")
+
+    # Handle fresh mode
+    if fresh:
+        if os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+    else:
+        # Skip-when-already-complete: output exists and no checkpoint means previous run succeeded
+        has_checkpoint = os.path.exists(checkpoint_path)
+        if os.path.exists(results_path) and not has_checkpoint:
+            # Check if there are errored units worth retrying
+            experiment = read_json(results_path)
+            error_count = sum(
+                1 for r in experiment.get("results", [])
+                if r.get("verdict") == "ERROR"
+            )
+
+            if error_count > 0 and not skip_errors:
+                # Copy completed results to checkpoint path so the resume
+                # logic re-processes errored units. This works because
+                # results.json and the checkpoint format share the same
+                # top-level keys ("results", "code_by_route").
+                shutil.copy2(results_path, checkpoint_path)
+                print(f"[Analyze] Retrying {error_count} errored units from: {results_path}", file=sys.stderr)
+            else:
+                print(f"[Analyze] Already complete: {results_path}", file=sys.stderr)
+                print("[Analyze] Use --fresh to reanalyze all units from scratch.", file=sys.stderr)
+
+                metrics = _recount_metrics(experiment.get("results", []))
+
+                return AnalyzeResult(
+                    results_path=results_path,
+                    metrics=metrics,
+                    usage=UsageInfo(),
+                )
 
     # Reset tracking for this analysis run
     tracking.reset_tracking()
@@ -90,8 +180,7 @@ def run_analysis(
 
     # Load dataset
     print(f"[Analyze] Loading dataset: {dataset_path}", file=sys.stderr)
-    with open(dataset_path) as f:
-        dataset = json.load(f)
+    dataset = read_json(dataset_path)
 
     units = dataset.get("units", [])
 
@@ -107,8 +196,6 @@ def run_analysis(
     if limit:
         units = units[:limit]
 
-    print(f"[Analyze] Analyzing {len(units)} units...", file=sys.stderr)
-
     # --- Stage 1: Detection ---
     results = []
     code_by_route = {}
@@ -116,13 +203,51 @@ def run_analysis(
         "vulnerable": 0,
         "bypassable": 0,
         "inconclusive": 0,
+        "insufficient_context": 0,
         "protected": 0,
         "safe": 0,
         "errors": 0,
     }
 
+    # Load checkpoint if resuming
+    completed_ids = set()
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        try:
+            cp = read_json(checkpoint_path)
+            results = cp.get("results", [])
+            code_by_route = cp.get("code_by_route", {})
+            if not skip_errors:
+                # Filter out errored results so they get reprocessed.
+                # This zeroes their counts; they'll be recounted after reprocessing.
+                results = [r for r in results if r.get("verdict") != "ERROR"]
+            completed_ids = {r["unit_id"] for r in results}
+            # Recount from checkpoint
+            for r in results:
+                finding = r.get("finding", "error")
+                if finding in counts:
+                    counts[finding] += 1
+                elif r.get("verdict") == "ERROR":
+                    counts["errors"] += 1
+            print(f"[Analyze] Resuming: {len(completed_ids)} units already done", file=sys.stderr)
+        except (json.JSONDecodeError, OSError):
+            # Corrupt checkpoint — start fresh
+            print("[Analyze] Corrupt checkpoint, starting fresh", file=sys.stderr)
+            results = []
+            code_by_route = {}
+            completed_ids = set()
+
+    # Set up progress reporter with resumed offset
+    tracker = get_global_tracker()
+    progress = ProgressReporter("Analyze", len(units), tracker=tracker, completed=len(completed_ids))
+
+    print(f"[Analyze] Analyzing {len(units)} units...", file=sys.stderr)
+
     for i, unit in enumerate(units):
         uid = unit.get("id", f"unit_{i}")
+        if uid in completed_ids:
+            print(f"  [{i+1}/{len(units)}] {uid} -> (resumed)", file=sys.stderr)
+            continue
+
         print(f"  [{i+1}/{len(units)}] {uid}", file=sys.stderr, end="")
 
         try:
@@ -169,6 +294,14 @@ def run_analysis(
                 "error": str(e),
             })
 
+        # Save checkpoint after each unit
+        if checkpoint_path:
+            _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id)
+
+        progress.report(unit_label=uid, detail=results[-1].get("finding", "error"))
+
+    progress.finish()
+
     tracking.log_usage("Stage 1")
 
     # --- Stage 1 Consistency Check ---
@@ -197,7 +330,6 @@ def run_analysis(
         print(f"[Analyze] Consistency check error (non-fatal): {e}", file=sys.stderr)
 
     # --- Write results ---
-    results_path = os.path.join(output_dir, "results.json")
     experiment_result = {
         "dataset": os.path.basename(dataset_path),
         "model": model_id,
@@ -210,8 +342,11 @@ def run_analysis(
         "code_by_route": code_by_route,
     }
 
-    with open(results_path, "w") as f:
-        json.dump(experiment_result, f, indent=2)
+    atomic_write_json(results_path, experiment_result)
+
+    # Clean up checkpoint on success
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        os.remove(checkpoint_path)
 
     print(f"\n[Analyze] Results written to {results_path}", file=sys.stderr)
 
@@ -222,6 +357,7 @@ def run_analysis(
         vulnerable=counts["vulnerable"],
         bypassable=counts["bypassable"],
         inconclusive=counts["inconclusive"],
+        insufficient_context=counts["insufficient_context"],
         protected=counts["protected"],
         safe=counts["safe"],
         errors=counts["errors"],

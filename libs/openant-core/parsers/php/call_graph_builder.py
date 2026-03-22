@@ -37,6 +37,8 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+from utilities.file_io import read_json, write_json, open_utf8
+
 import tree_sitter_php as ts_php
 from tree_sitter import Language, Parser
 
@@ -482,8 +484,7 @@ Examples:
     args = parser.parse_args()
 
     try:
-        with open(args.input_file) as f:
-            extractor_output = json.load(f)
+        extractor_output = read_json(args.input_file)
 
         print(f"Processing {len(extractor_output.get('functions', {}))} functions...", file=sys.stderr)
 
@@ -503,7 +504,7 @@ Examples:
         output = json.dumps(result, indent=2)
 
         if args.output:
-            with open(args.output, 'w') as f:
+            with open_utf8(args.output, 'w') as f:
                 f.write(output)
             print(f"Output written to: {args.output}", file=sys.stderr)
         else:

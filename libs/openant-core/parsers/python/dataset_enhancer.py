@@ -8,11 +8,12 @@ function calls and gathering related code.
 
 import ast
 import json
-import os
 import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+
+from utilities.file_io import read_json, write_json, open_utf8
 
 
 class PythonDependencyResolver:
@@ -226,8 +227,7 @@ class PythonDependencyResolver:
 
 def enhance_dataset(dataset_path: str, repo_path: str, output_path: str = None):
     """Enhance a dataset with resolved dependencies."""
-    with open(dataset_path, 'r') as f:
-        dataset = json.load(f)
+    dataset = read_json(dataset_path)
 
     resolver = PythonDependencyResolver(repo_path)
 
@@ -263,8 +263,7 @@ def enhance_dataset(dataset_path: str, repo_path: str, output_path: str = None):
     dataset['enhanced'] = True
 
     if output_path:
-        with open(output_path, 'w') as f:
-            json.dump(dataset, f, indent=2)
+        write_json(output_path, dataset)
         print(f"Enhanced dataset written to {output_path}")
     else:
         print(json.dumps(dataset, indent=2))

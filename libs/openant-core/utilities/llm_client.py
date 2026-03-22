@@ -3,6 +3,11 @@ Anthropic LLM Client
 
 Wrapper for Claude API calls with built-in token tracking and cost calculation.
 
+Supports two modes:
+  - Direct API: Uses ANTHROPIC_API_KEY with the anthropic SDK (default)
+  - Local Claude Code: Calls the claude CLI in print mode, using the local
+    session's authentication (set OPENANT_LOCAL_CLAUDE=true to enable)
+
 Classes:
     TokenTracker: Tracks token usage and costs across multiple LLM calls
     AnthropicClient: Synchronous Claude API client with automatic token tracking
@@ -18,9 +23,12 @@ Usage:
 """
 
 import os
+import sys
 from typing import Optional
 import anthropic
 from dotenv import load_dotenv
+
+from .local_claude import LocalClaudeClient, is_enabled as _use_local_claude
 
 
 # Pricing per million tokens (as of December 2024)
@@ -133,12 +141,43 @@ def reset_global_tracker():
     _global_tracker.reset()
 
 
+def create_anthropic_client():
+    """Create an Anthropic client, respecting local Claude Code mode.
+
+    Returns an anthropic.Anthropic() in normal mode, or a LocalClaudeClient
+    proxy in local Claude Code mode. Both expose .messages.create().
+    """
+    if _use_local_claude():
+        config_dir = os.getenv("CLAUDE_CONFIG_DIR")
+        if config_dir:
+            print(f"Using local Claude Code session (config: {config_dir})", file=sys.stderr)
+        else:
+            print("Using local Claude Code session for authentication", file=sys.stderr)
+        return LocalClaudeClient()
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        raise ValueError("ANTHROPIC_API_KEY not found in environment")
+    return anthropic.Anthropic(api_key=api_key)
+
+
+def create_message(client, **kwargs) -> str:
+    """Send a message and return the text content.
+
+    Works with both anthropic.Anthropic() and LocalClaudeClient.
+    """
+    response = client.messages.create(**kwargs)
+    return response.content[0].text
+
+
 class AnthropicClient:
     """
-    Client for Anthropic Claude API.
+    Client for Anthropic Claude API with automatic token tracking.
 
-    Uses Claude Opus 4 for vulnerability analysis.
-    Tracks token usage and costs for all calls.
+    Supports two modes:
+      - Direct API (default): Uses ANTHROPIC_API_KEY
+      - Local Claude Code: Set OPENANT_LOCAL_CLAUDE=true to use the local
+        Claude Code session's authentication instead of an API key.
     """
 
     def __init__(self, model: str = "claude-opus-4-20250514", tracker: TokenTracker = None):
@@ -152,14 +191,31 @@ class AnthropicClient:
         """
         load_dotenv()
 
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not found in environment")
-
-        self.client = anthropic.Anthropic(api_key=api_key)
+        self.client = create_anthropic_client()
         self.model = model
         self.tracker = tracker or _global_tracker
         self.last_call = None  # Store last call details
+        
+
+    def _call(self, model: str, prompt: str, system: str = None, max_tokens: int = 8192) -> str:
+        """Make an API call, track usage, and return the response text."""
+        kwargs = {
+            "model": model,
+            "max_tokens": max_tokens,
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        if system:
+            kwargs["system"] = system
+
+        message = self.client.messages.create(**kwargs)
+
+        self.last_call = self.tracker.record_call(
+            model=model,
+            input_tokens=message.usage.input_tokens,
+            output_tokens=message.usage.output_tokens,
+        )
+
+        return message.content[0].text
 
     async def analyze(self, prompt: str, max_tokens: int = 8192) -> str:
         """
@@ -172,22 +228,7 @@ class AnthropicClient:
         Returns:
             Response text from Claude
         """
-        message = self.client.messages.create(
-            model=self.model,
-            max_tokens=max_tokens,
-            messages=[
-                {"role": "user", "content": prompt}
-            ]
-        )
-
-        # Track token usage
-        self.last_call = self.tracker.record_call(
-            model=self.model,
-            input_tokens=message.usage.input_tokens,
-            output_tokens=message.usage.output_tokens
-        )
-
-        return message.content[0].text
+        return self._call(self.model, prompt, max_tokens=max_tokens)
 
     def analyze_sync(self, prompt: str, max_tokens: int = 8192, model: str = None, system: str = None) -> str:
         """
@@ -202,28 +243,7 @@ class AnthropicClient:
         Returns:
             Response text from Claude
         """
-        used_model = model or self.model
-
-        kwargs = {
-            "model": used_model,
-            "max_tokens": max_tokens,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
-        }
-        if system:
-            kwargs["system"] = system
-
-        message = self.client.messages.create(**kwargs)
-
-        # Track token usage
-        self.last_call = self.tracker.record_call(
-            model=used_model,
-            input_tokens=message.usage.input_tokens,
-            output_tokens=message.usage.output_tokens
-        )
-
-        return message.content[0].text
+        return self._call(model or self.model, prompt, system=system, max_tokens=max_tokens)
 
     def get_last_call(self) -> Optional[dict]:
         """

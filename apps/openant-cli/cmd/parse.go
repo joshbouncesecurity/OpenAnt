@@ -31,7 +31,7 @@ var (
 func init() {
 	parseCmd.Flags().StringVarP(&parseOutput, "output", "o", "", "Output directory (default: project scan dir)")
 	parseCmd.Flags().StringVarP(&parseLanguage, "language", "l", "", "Language: python, javascript, go, c, ruby, php, auto")
-	parseCmd.Flags().StringVar(&parseLevel, "level", "all", "Processing level: all, reachable, codeql, exploitable")
+	parseCmd.Flags().StringVar(&parseLevel, "level", "reachable", "Processing level: all, reachable, codeql, exploitable")
 }
 
 func runParse(cmd *cobra.Command, args []string) {
@@ -82,9 +82,7 @@ func runParse(cmd *cobra.Command, args []string) {
 	if parseLanguage != "auto" {
 		pyArgs = append(pyArgs, "--language", parseLanguage)
 	}
-	if parseLevel != "all" {
-		pyArgs = append(pyArgs, "--level", parseLevel)
-	}
+	pyArgs = append(pyArgs, "--level", parseLevel)
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, resolvedAPIKey())
 	if err != nil {

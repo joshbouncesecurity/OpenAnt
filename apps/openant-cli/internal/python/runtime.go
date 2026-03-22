@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -40,6 +41,9 @@ func venvDir() string {
 
 // venvPython returns the path to the Python binary inside the managed venv.
 func venvPython() string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(venvDir(), "Scripts", "python.exe")
+	}
 	return filepath.Join(venvDir(), "bin", "python")
 }
 

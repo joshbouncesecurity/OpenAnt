@@ -15,13 +15,15 @@ All LLM calls are now centralized in Python.
 import json
 import argparse
 import logging
+import os
 import sys
 import time
 from pathlib import Path
 from typing import Callable, Optional
 
-from .llm_client import AnthropicClient, TokenTracker, get_global_tracker, reset_global_tracker
-from .agentic_enhancer import RepositoryIndex, enhance_unit_with_agent, load_index_from_file
+from .file_io import read_json, write_json
+from .llm_client import AnthropicClient, TokenTracker, get_global_tracker
+from .agentic_enhancer import enhance_unit_with_agent, load_index_from_file
 
 
 # Null logger that discards all messages (used when no logger provided)
@@ -260,7 +262,7 @@ class ContextEnhancer:
 
         except Exception as e:
             self.stats["errors"] += 1
-            self._log("error", f"Error enhancing unit", unit_id=function_id, error=str(e))
+            self._log("error", "Error enhancing unit", unit_id=function_id, error=str(e))
             unit["llm_context"] = self._get_default_context()
 
         return unit
@@ -341,6 +343,7 @@ class ContextEnhancer:
         verbose: bool = False,
         checkpoint_path: str = None,
         progress_callback: Optional[Callable] = None,
+        skip_errors: bool = False,
     ) -> dict:
         """
         Enhance all units using agentic approach with tool use.
@@ -360,6 +363,7 @@ class ContextEnhancer:
             checkpoint_path: Path to save/load checkpoint file (enables resume)
             progress_callback: Optional callback(unit_id, classification, unit_elapsed)
                 called after each unit completes.
+            skip_errors: If True, skip errored units on resume instead of retrying them.
 
         Returns:
             Enhanced dataset with agent_context field
@@ -374,13 +378,14 @@ class ContextEnhancer:
             checkpoint_file = Path(checkpoint_path)
             if checkpoint_file.exists():
                 self._log("info", f"Found checkpoint at {checkpoint_path}, resuming...")
-                with open(checkpoint_file, 'r') as f:
-                    checkpoint_data = json.load(f)
+                checkpoint_data = read_json(checkpoint_file)
 
                 # Build set of already-processed unit IDs
                 for cp_unit in checkpoint_data.get("units", []):
-                    if cp_unit.get("agent_context") and not cp_unit["agent_context"].get("error"):
-                        processed_ids.add(cp_unit.get("id"))
+                    if cp_unit.get("agent_context"):
+                        has_error = cp_unit["agent_context"].get("error")
+                        if not has_error or skip_errors:
+                            processed_ids.add(cp_unit.get("id"))
 
                 # Restore units from checkpoint
                 cp_units_by_id = {u.get("id"): u for u in checkpoint_data.get("units", [])}
@@ -469,7 +474,7 @@ class ContextEnhancer:
             except Exception as e:
                 classification = "error"
                 agentic_stats["errors"] += 1
-                self._log("error", f"Error processing unit", unit_id=unit_id, error=str(e))
+                self._log("error", "Error processing unit", unit_id=unit_id, error=str(e))
                 unit["agent_context"] = {
                     "error": str(e),
                     "security_classification": "neutral",
@@ -483,6 +488,10 @@ class ContextEnhancer:
             # Save checkpoint after each unit
             if checkpoint_path:
                 self._save_checkpoint(dataset, checkpoint_path, agentic_stats)
+
+        # Clean up checkpoint on success
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
 
         # Get token usage stats
         token_stats = self.tracker.get_totals()
@@ -517,14 +526,15 @@ class ContextEnhancer:
 
     def _save_checkpoint(self, dataset: dict, checkpoint_path: str, agentic_stats: dict):
         """Save checkpoint to disk after each unit is processed."""
+        from core.utils import atomic_write_json
+
         # Update metadata before saving
         dataset["metadata"] = dataset.get("metadata", {})
         dataset["metadata"]["checkpoint"] = True
         dataset["metadata"]["agentic_stats"] = agentic_stats
         dataset["metadata"]["token_usage"] = self.tracker.get_totals()
 
-        with open(checkpoint_path, 'w') as f:
-            json.dump(dataset, f, indent=2)
+        atomic_write_json(checkpoint_path, dataset)
 
     def get_token_stats(self) -> dict:
         """
@@ -651,8 +661,7 @@ def main():
         logging.error(f"Error: Input file not found: {input_path}")
         return 1
 
-    with open(input_path, 'r') as f:
-        dataset = json.load(f)
+    dataset = read_json(input_path)
 
     # Enhance
     enhancer = ContextEnhancer()
@@ -682,8 +691,7 @@ def main():
 
     # Write output
     output_path = Path(args.output) if args.output else input_path
-    with open(output_path, 'w') as f:
-        json.dump(enhanced, f, indent=2)
+    write_json(output_path, enhanced)
 
     logging.info(f"Enhanced dataset written to: {output_path}")
     return 0

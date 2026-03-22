@@ -22,6 +22,8 @@ import os
 import sys
 import tempfile
 
+from utilities.file_io import read_json
+
 
 def _output_json(data: dict):
     """Write JSON to stdout."""
@@ -51,6 +53,7 @@ def cmd_scan(args):
             enhance=not args.no_enhance,
             enhance_mode=args.enhance_mode,
             dynamic_test=args.dynamic_test,
+            fresh=args.fresh,
         )
 
         _output_json(success(result.to_dict()))
@@ -135,7 +138,8 @@ def cmd_enhance(args):
                 analyzer_output_path=args.analyzer_output,
                 repo_path=args.repo_path,
                 mode=args.mode,
-                checkpoint_path=args.checkpoint,
+                fresh=args.fresh,
+                skip_errors=args.skip_errors,
             )
 
             ctx.summary = {
@@ -184,6 +188,8 @@ def cmd_analyze(args):
                 limit=args.limit,
                 model=args.model,
                 exploitable_only=args.exploitable_only,
+                fresh=args.fresh,
+                skip_errors=args.skip_errors,
             )
 
             ctx.summary = {
@@ -270,6 +276,7 @@ def cmd_verify(args):
                 analyzer_output_path=args.analyzer_output,
                 app_context_path=args.app_context,
                 repo_path=args.repo_path,
+                fresh=args.fresh,
             )
 
             ctx.summary = {
@@ -320,7 +327,18 @@ def cmd_build_output(args):
 
             ctx.outputs = {"pipeline_output_path": path}
 
-        _output_json(success({"pipeline_output_path": path}))
+        # Read back the generated file to extract findings count
+        findings_count = 0
+        try:
+            pipeline_data = read_json(path)
+            findings_count = len(pipeline_data.get("findings", []))
+        except (OSError, json.JSONDecodeError):
+            pass
+
+        _output_json(success({
+            "pipeline_output_path": path,
+            "findings_count": findings_count,
+        }))
         return 0
 
     except Exception as e:
@@ -487,6 +505,8 @@ def main():
     scan_p.add_argument("--no-skip-tests", action="store_true", help="Include test files in parsing (default: tests are skipped)")
     scan_p.add_argument("--limit", type=int, help="Max units to analyze")
     scan_p.add_argument("--model", choices=["opus", "sonnet"], default="opus", help="Model (default: opus)")
+    scan_p.add_argument("--fresh", action="store_true",
+                        help="Ignore previous progress and rerun all steps from scratch")
     scan_p.set_defaults(func=cmd_scan)
 
     # ---------------------------------------------------------------
@@ -519,7 +539,10 @@ def main():
     enhance_p.add_argument("--analyzer-output", help="Path to analyzer_output.json (required for agentic mode)")
     enhance_p.add_argument("--repo-path", help="Path to the repository (required for agentic mode)")
     enhance_p.add_argument("--output", "-o", help="Output path for enhanced dataset (default: {input}_enhanced.json)")
-    enhance_p.add_argument("--checkpoint", help="Path to save/resume checkpoint (agentic mode)")
+    enhance_p.add_argument("--fresh", action="store_true",
+                           help="Ignore checkpoint and reprocess all units from scratch")
+    enhance_p.add_argument("--skip-errors", action="store_true",
+                           help="Skip errored units instead of retrying them")
     enhance_p.add_argument(
         "--mode",
         choices=["agentic", "single-shot"],
@@ -542,6 +565,10 @@ def main():
     analyze_p.add_argument("--exploitable-only", action="store_true",
                            help="Only analyze units classified as exploitable/vulnerable by enhancer")
     analyze_p.add_argument("--model", choices=["opus", "sonnet"], default="opus", help="Model (default: opus)")
+    analyze_p.add_argument("--fresh", action="store_true",
+                           help="Ignore checkpoint and reanalyze all units from scratch")
+    analyze_p.add_argument("--skip-errors", action="store_true",
+                           help="Skip errored units instead of retrying them")
     analyze_p.set_defaults(func=cmd_analyze)
 
     # ---------------------------------------------------------------
@@ -553,6 +580,8 @@ def main():
     verify_p.add_argument("--app-context", help="Path to application_context.json")
     verify_p.add_argument("--repo-path", help="Path to the repository")
     verify_p.add_argument("--output", "-o", help="Output directory (default: temp dir)")
+    verify_p.add_argument("--fresh", action="store_true",
+                          help="Ignore checkpoint and reverify all findings from scratch")
     verify_p.set_defaults(func=cmd_verify)
 
     # ---------------------------------------------------------------

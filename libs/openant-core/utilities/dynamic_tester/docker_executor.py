@@ -12,6 +12,8 @@ import subprocess
 import tempfile
 import time
 
+from utilities.file_io import open_utf8, run_utf8
+
 # Timeouts
 DEFAULT_CONTAINER_TIMEOUT = 120   # seconds per container
 DEFAULT_BUILD_TIMEOUT = 300       # seconds for docker build
@@ -61,18 +63,18 @@ def _sanitize_compose(content: str) -> str:
 def _write_test_files(work_dir: str, generation: dict) -> None:
     """Write generated test files into the working directory."""
     # Write Dockerfile
-    with open(os.path.join(work_dir, "Dockerfile"), "w") as f:
+    with open_utf8(os.path.join(work_dir, "Dockerfile"), "w") as f:
         f.write(generation["dockerfile"])
 
     # Write test script
     test_filename = generation.get("test_filename", "test_exploit.py")
-    with open(os.path.join(work_dir, test_filename), "w") as f:
+    with open_utf8(os.path.join(work_dir, test_filename), "w") as f:
         f.write(generation["test_script"])
 
     # Write requirements/dependencies file
     if generation.get("requirements"):
         req_filename = generation.get("requirements_filename", "requirements.txt")
-        with open(os.path.join(work_dir, req_filename), "w") as f:
+        with open_utf8(os.path.join(work_dir, req_filename), "w") as f:
             f.write(generation["requirements"])
 
     # Copy attacker server if needed (before docker-compose so it's available)
@@ -81,21 +83,21 @@ def _write_test_files(work_dir: str, generation: dict) -> None:
         os.makedirs(attacker_dir, exist_ok=True)
         shutil.copy2(ATTACKER_SERVER_PATH, os.path.join(attacker_dir, "server.py"))
         # Write attacker Dockerfile
-        with open(os.path.join(attacker_dir, "Dockerfile"), "w") as f:
+        with open_utf8(os.path.join(attacker_dir, "Dockerfile"), "w") as f:
             f.write("FROM python:3.11-slim\nWORKDIR /app\nCOPY server.py .\n"
                     "EXPOSE 9999\nCMD [\"python\", \"server.py\"]\n")
 
     # Write docker-compose if multi-service, with sanitization
     if generation.get("docker_compose"):
         compose_content = _sanitize_compose(generation["docker_compose"])
-        with open(os.path.join(work_dir, "docker-compose.yml"), "w") as f:
+        with open_utf8(os.path.join(work_dir, "docker-compose.yml"), "w") as f:
             f.write(compose_content)
 
 
 def _run_command(cmd: list[str], timeout: int, cwd: str = None) -> tuple[str, str, int, bool]:
     """Run a command with timeout. Returns (stdout, stderr, exit_code, timed_out)."""
     try:
-        result = subprocess.run(
+        result = run_utf8(
             cmd,
             capture_output=True,
             text=True,

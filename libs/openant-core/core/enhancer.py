@@ -7,11 +7,13 @@ for both agentic and single-shot enhancement modes.
 
 import json
 import os
+import shutil
 import sys
 
 from core.schemas import EnhanceResult, UsageInfo
 from core import tracking
 from core.progress import ProgressReporter
+from utilities.file_io import read_json
 
 
 def enhance_dataset(
@@ -21,6 +23,8 @@ def enhance_dataset(
     repo_path: str | None = None,
     mode: str = "agentic",
     checkpoint_path: str | None = None,
+    fresh: bool = False,
+    skip_errors: bool = False,
     model: str = "sonnet",
 ) -> EnhanceResult:
     """Enhance a parsed dataset with security context.
@@ -32,6 +36,10 @@ def enhance_dataset(
         repo_path: Path to the repository (required for agentic mode).
         mode: "agentic" (thorough, tool-use) or "single-shot" (fast, cheaper).
         checkpoint_path: Path to save/resume checkpoint (agentic mode only).
+        fresh: If True, delete existing checkpoint and reprocess all units.
+        skip_errors: If True, skip errored units instead of retrying them.
+            By default, errored units are automatically retried on re-run.
+            Only supported in agentic mode.
         model: "sonnet" (default, cost-effective).
 
     Returns:
@@ -39,6 +47,58 @@ def enhance_dataset(
     """
     # Reset tracking for this step
     tracking.reset_tracking()
+
+    # Auto-generate checkpoint path next to output file (agentic mode only)
+    if checkpoint_path is None and mode == "agentic":
+        checkpoint_path = os.path.splitext(output_path)[0] + "_checkpoint.json"
+
+    # Validate flag combinations
+    if fresh and skip_errors:
+        raise ValueError("Cannot use both --fresh and --skip-errors")
+    if skip_errors and mode != "agentic":
+        raise ValueError("--skip-errors is only supported in agentic mode")
+
+    # If fresh, delete existing checkpoint and output
+    if fresh:
+        if checkpoint_path and os.path.exists(checkpoint_path):
+            os.remove(checkpoint_path)
+    else:
+        # If output already exists and no checkpoint (i.e. previous run completed),
+        # check for errored units to retry.
+        has_checkpoint = checkpoint_path and os.path.exists(checkpoint_path)
+        if os.path.exists(output_path) and not has_checkpoint:
+            # Check if there are errored units worth retrying
+            enhanced = read_json(output_path)
+            context_key = "agent_context" if mode == "agentic" else "llm_context"
+            error_count = sum(
+                1 for u in enhanced.get("units", [])
+                if u.get(context_key, {}).get("error")
+            )
+
+            if error_count > 0 and not skip_errors and checkpoint_path:
+                # Copy completed output to checkpoint path so the existing
+                # checkpoint resume logic re-processes errored units.
+                shutil.copy2(output_path, checkpoint_path)
+                print(f"[Enhance] Retrying {error_count} errored units from: {output_path}", file=sys.stderr)
+            else:
+                print(f"[Enhance] Already complete: {output_path}", file=sys.stderr)
+                print("[Enhance] Use --fresh to reprocess all units from scratch.", file=sys.stderr)
+
+                classifications = {}
+                for unit in enhanced.get("units", []):
+                    ctx = unit.get(context_key, {})
+                    if ctx.get("error"):
+                        continue
+                    cls = ctx.get("security_classification", "unknown")
+                    classifications[cls] = classifications.get(cls, 0) + 1
+
+                return EnhanceResult(
+                    enhanced_dataset_path=output_path,
+                    units_enhanced=len(enhanced.get("units", [])) - error_count,
+                    error_count=error_count,
+                    classifications=classifications,
+                    usage=UsageInfo(),
+                )
 
     model_id = "claude-sonnet-4-20250514" if model == "sonnet" else "claude-opus-4-6"
     print(f"[Enhance] Mode: {mode}", file=sys.stderr)
@@ -54,14 +114,26 @@ def enhance_dataset(
 
     # Load dataset
     print(f"[Enhance] Loading dataset: {dataset_path}", file=sys.stderr)
-    with open(dataset_path) as f:
-        dataset = json.load(f)
+    dataset = read_json(dataset_path)
 
     units = dataset.get("units", [])
     print(f"[Enhance] Units to enhance: {len(units)}", file=sys.stderr)
 
-    # Set up progress reporter
-    progress = ProgressReporter("Enhance", len(units), tracker=tracker)
+    # Count already-resumed units from checkpoint (if any)
+    resumed_count = 0
+    if checkpoint_path and os.path.exists(checkpoint_path):
+        try:
+            cp_data = read_json(checkpoint_path)
+            for cp_unit in cp_data.get("units", []):
+                if cp_unit.get("agent_context"):
+                    has_error = cp_unit["agent_context"].get("error")
+                    if not has_error or skip_errors:
+                        resumed_count += 1
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # Set up progress reporter (start counter at resumed count so numbering is correct)
+    progress = ProgressReporter("Enhance", len(units), tracker=tracker, completed=resumed_count)
 
     def _on_unit_done(unit_id: str, classification: str, unit_elapsed: float):
         progress.report(
@@ -81,6 +153,7 @@ def enhance_dataset(
             repo_path=repo_path,
             checkpoint_path=checkpoint_path,
             progress_callback=_on_unit_done,
+            skip_errors=skip_errors,
         )
     elif mode == "single-shot":
         enhanced = enhancer.enhance_dataset(
@@ -93,9 +166,9 @@ def enhance_dataset(
     progress.finish()
 
     # Write enhanced dataset
+    from core.utils import atomic_write_json
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(enhanced, f, indent=2)
+    atomic_write_json(output_path, enhanced)
 
     print(f"[Enhance] Enhanced dataset: {output_path}", file=sys.stderr)
 

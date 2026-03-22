@@ -7,10 +7,10 @@ Public API:
     run_dynamic_tests(pipeline_output_path, output_dir) -> list[DynamicTestResult]
 """
 
-import json
 import os
 import sys
 
+from utilities.file_io import read_json, write_json, open_utf8
 from utilities.dynamic_tester.models import DynamicTestResult
 from utilities.dynamic_tester.test_generator import generate_test, regenerate_test
 from utilities.dynamic_tester.docker_executor import run_single_container
@@ -35,8 +35,7 @@ def run_dynamic_tests(
         List of DynamicTestResult objects
     """
     # Load pipeline output
-    with open(pipeline_output_path, "r") as f:
-        pipeline = json.load(f)
+    pipeline = read_json(pipeline_output_path)
 
     findings = pipeline.get("findings", [])
     repo_info = {
@@ -132,19 +131,18 @@ def run_dynamic_tests(
     report_md = generate_report(results, repo_info["name"], total_cost)
 
     report_path = os.path.join(output_dir, "DYNAMIC_TEST_RESULTS.md")
-    with open(report_path, "w") as f:
+    with open_utf8(report_path, "w") as f:
         f.write(report_md)
     print(f"\nReport written to {report_path}", file=sys.stderr)
 
     # Save structured results JSON
     results_path = os.path.join(output_dir, "dynamic_test_results.json")
-    with open(results_path, "w") as f:
-        json.dump({
-            "repository": repo_info["name"],
-            "total_findings": len(findings),
-            "total_cost_usd": round(total_cost, 6),
-            "results": [r.to_dict() for r in results],
-        }, f, indent=2, ensure_ascii=False)
+    write_json(results_path, {
+        "repository": repo_info["name"],
+        "total_findings": len(findings),
+        "total_cost_usd": round(total_cost, 6),
+        "results": [r.to_dict() for r in results],
+    }, ensure_ascii=False)
     print(f"Results JSON written to {results_path}", file=sys.stderr)
 
     return results

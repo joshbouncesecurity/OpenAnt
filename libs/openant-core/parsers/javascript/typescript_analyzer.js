@@ -132,9 +132,9 @@ class TypeScriptAnalyzer {
   analyzeFiles(filePaths) {
     // Step 1: Add all files to project
     for (const filePath of filePaths) {
-      const fullPath = path.isAbsolute(filePath)
-        ? filePath
-        : path.join(this.repoPath, filePath);
+      const fullPath = path.resolve(
+        path.isAbsolute(filePath) ? filePath : path.join(this.repoPath, filePath)
+      ).replace(/\\/g, '/');
 
       try {
         this.project.addSourceFileAtPath(fullPath);
@@ -487,6 +487,9 @@ class TypeScriptAnalyzer {
  */
 function extractSingleFunction(filePath, functionRef) {
   const fs = require("fs");
+
+  // Normalize path for cross-platform compatibility (ts-morph uses forward slashes)
+  filePath = path.resolve(filePath).replace(/\\/g, '/');
 
   // Check if file exists
   if (!fs.existsSync(filePath)) {
@@ -891,7 +894,8 @@ if (require.main === module) {
           const content = fs.readFileSync(listFile, "utf-8");
           filePaths = content
             .split("\n")
-            .filter((line) => line.trim().length > 0);
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
           console.error(`Loaded ${filePaths.length} files from ${listFile}`);
           i += 2;
         } else if (args[i] === "--output" && i + 1 < args.length) {
