@@ -72,6 +72,7 @@ class AnalysisMetrics:
     vulnerable: int = 0
     bypassable: int = 0
     inconclusive: int = 0
+    insufficient_context: int = 0
     protected: int = 0
     safe: int = 0
     errors: int = 0
