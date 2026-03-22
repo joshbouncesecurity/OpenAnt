@@ -23,6 +23,7 @@ def enhance_dataset(
     mode: str = "agentic",
     checkpoint_path: str | None = None,
     fresh: bool = False,
+    retry_errors: bool = False,
     model: str = "sonnet",
 ) -> EnhanceResult:
     """Enhance a parsed dataset with security context.
@@ -46,6 +47,12 @@ def enhance_dataset(
     if checkpoint_path is None and mode == "agentic":
         checkpoint_path = os.path.splitext(output_path)[0] + "_checkpoint.json"
 
+    # Validate flag combinations
+    if fresh and retry_errors:
+        raise ValueError("Cannot use both --fresh and --retry-errors")
+    if retry_errors and mode != "agentic":
+        raise ValueError("--retry-errors is only supported in agentic mode")
+
     # If fresh, delete existing checkpoint and output
     if fresh:
         if checkpoint_path and os.path.exists(checkpoint_path):
@@ -55,30 +62,38 @@ def enhance_dataset(
         # skip enhancement entirely — use --fresh to force a rerun.
         has_checkpoint = checkpoint_path and os.path.exists(checkpoint_path)
         if os.path.exists(output_path) and not has_checkpoint:
-            print(f"[Enhance] Already complete: {output_path}", file=sys.stderr)
-            print("[Enhance] Use --fresh to reprocess all units from scratch.", file=sys.stderr)
+            if retry_errors:
+                # Copy completed output to checkpoint path so the existing
+                # checkpoint resume logic re-processes errored units.
+                import shutil
+                shutil.copy2(output_path, checkpoint_path)
+                print(f"[Enhance] Retrying errored units from: {output_path}", file=sys.stderr)
+            else:
+                print(f"[Enhance] Already complete: {output_path}", file=sys.stderr)
+                print("[Enhance] Use --fresh to reprocess all units from scratch.", file=sys.stderr)
+                print("[Enhance] Use --retry-errors to reprocess only errored units.", file=sys.stderr)
 
-            # Load the existing output to build the result
-            enhanced = read_json(output_path)
+                # Load the existing output to build the result
+                enhanced = read_json(output_path)
 
-            context_key = "agent_context" if mode == "agentic" else "llm_context"
-            classifications = {}
-            error_count = 0
-            for unit in enhanced.get("units", []):
-                ctx = unit.get(context_key, {})
-                if ctx.get("error"):
-                    error_count += 1
-                    continue
-                cls = ctx.get("security_classification", "unknown")
-                classifications[cls] = classifications.get(cls, 0) + 1
+                context_key = "agent_context" if mode == "agentic" else "llm_context"
+                classifications = {}
+                error_count = 0
+                for unit in enhanced.get("units", []):
+                    ctx = unit.get(context_key, {})
+                    if ctx.get("error"):
+                        error_count += 1
+                        continue
+                    cls = ctx.get("security_classification", "unknown")
+                    classifications[cls] = classifications.get(cls, 0) + 1
 
-            return EnhanceResult(
-                enhanced_dataset_path=output_path,
-                units_enhanced=len(enhanced.get("units", [])) - error_count,
-                error_count=error_count,
-                classifications=classifications,
-                usage=UsageInfo(),
-            )
+                return EnhanceResult(
+                    enhanced_dataset_path=output_path,
+                    units_enhanced=len(enhanced.get("units", [])) - error_count,
+                    error_count=error_count,
+                    classifications=classifications,
+                    usage=UsageInfo(),
+                )
 
     model_id = "claude-sonnet-4-20250514" if model == "sonnet" else "claude-opus-4-6"
     print(f"[Enhance] Mode: {mode}", file=sys.stderr)
