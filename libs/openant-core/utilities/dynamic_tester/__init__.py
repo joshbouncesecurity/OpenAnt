@@ -7,7 +7,6 @@ Public API:
     run_dynamic_tests(pipeline_output_path, output_dir) -> list[DynamicTestResult]
 """
 
-import json
 import os
 import sys
 
@@ -139,11 +138,11 @@ def run_dynamic_tests(
     # Save structured results JSON
     results_path = os.path.join(output_dir, "dynamic_test_results.json")
     write_json(results_path, {
-            "repository": repo_info["name"],
-            "total_findings": len(findings),
-            "total_cost_usd": round(total_cost, 6),
-            "results": [r.to_dict() for r in results],
-        }, ensure_ascii=False)
+        "repository": repo_info["name"],
+        "total_findings": len(findings),
+        "total_cost_usd": round(total_cost, 6),
+        "results": [r.to_dict() for r in results],
+    }, ensure_ascii=False)
     print(f"Results JSON written to {results_path}", file=sys.stderr)
 
     return results

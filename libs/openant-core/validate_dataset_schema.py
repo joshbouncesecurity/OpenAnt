@@ -6,7 +6,6 @@ Validates that a dataset matches the exact schema expected by experiment.py
 Run BEFORE any expensive LLM operations.
 """
 
-import json
 import sys
 
 from utilities.file_io import read_json

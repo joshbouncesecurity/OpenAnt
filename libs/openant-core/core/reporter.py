@@ -11,7 +11,6 @@ into the ``pipeline_output.json`` format consumed by ``python -m report``
 and ``run_dynamic_tests()``.
 """
 
-import json
 import os
 import subprocess
 import sys

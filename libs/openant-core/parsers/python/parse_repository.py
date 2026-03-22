@@ -140,7 +140,7 @@ def parse_repository(repo_path: str, options: dict = None) -> tuple:
 
     if output_dir:
         scan_file = Path(output_dir) / 'scan_result.json'
-        write_json(str(scan_file), scan_result)
+        write_json(scan_file, scan_result)
         print(f"  Saved: {scan_file}", file=sys.stderr)
 
     # Phase 2: Extract functions
@@ -155,7 +155,7 @@ def parse_repository(repo_path: str, options: dict = None) -> tuple:
 
     if output_dir:
         extract_file = Path(output_dir) / 'functions.json'
-        write_json(str(extract_file), extractor_result)
+        write_json(extract_file, extractor_result)
         print(f"  Saved: {extract_file}", file=sys.stderr)
 
     # Phase 3: Build call graph
@@ -171,7 +171,7 @@ def parse_repository(repo_path: str, options: dict = None) -> tuple:
 
     if output_dir:
         graph_file = Path(output_dir) / 'call_graph.json'
-        write_json(str(graph_file), call_graph_result)
+        write_json(graph_file, call_graph_result)
         print(f"  Saved: {graph_file}", file=sys.stderr)
 
     # Phase 4: Generate units
@@ -198,7 +198,7 @@ def parse_repository(repo_path: str, options: dict = None) -> tuple:
 
     if output_dir:
         analyzer_file = Path(output_dir) / 'analyzer_output.json'
-        write_json(str(analyzer_file), analyzer_output)
+        write_json(analyzer_file, analyzer_output)
         print(f"  Saved: {analyzer_file}", file=sys.stderr)
 
     print(f"\n" + "=" * 60, file=sys.stderr)
