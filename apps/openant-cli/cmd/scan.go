@@ -39,6 +39,7 @@ var (
 	scanLimit       int
 	scanModel       string
 	scanFresh       bool
+	scanConcurrency int
 )
 
 func init() {
@@ -54,6 +55,7 @@ func init() {
 	scanCmd.Flags().IntVar(&scanLimit, "limit", 0, "Max units to analyze (0 = no limit)")
 	scanCmd.Flags().StringVar(&scanModel, "model", "opus", "Model: opus or sonnet")
 	scanCmd.Flags().BoolVar(&scanFresh, "fresh", false, "Ignore previous progress and rerun all steps from scratch")
+	scanCmd.Flags().IntVarP(&scanConcurrency, "concurrency", "j", 4, "Number of concurrent LLM calls (default: 4)")
 }
 
 func runScan(cmd *cobra.Command, args []string) {
@@ -119,6 +121,9 @@ func runScan(cmd *cobra.Command, args []string) {
 	}
 	if scanFresh {
 		pyArgs = append(pyArgs, "--fresh")
+	}
+	if scanConcurrency != 4 {
+		pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", scanConcurrency))
 	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())

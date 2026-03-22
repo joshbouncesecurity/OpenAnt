@@ -26,6 +26,7 @@ def enhance_dataset(
     fresh: bool = False,
     skip_errors: bool = False,
     model: str = "sonnet",
+    concurrency: int = 4,
 ) -> EnhanceResult:
     """Enhance a parsed dataset with security context.
 
@@ -154,6 +155,7 @@ def enhance_dataset(
             checkpoint_path=checkpoint_path,
             progress_callback=_on_unit_done,
             skip_errors=skip_errors,
+            concurrency=concurrency,
         )
     elif mode == "single-shot":
         enhanced = enhancer.enhance_dataset(

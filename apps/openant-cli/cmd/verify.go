@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/knostic/open-ant-cli/internal/output"
@@ -30,6 +31,7 @@ var (
 	verifyAppContext     string
 	verifyRepoPath       string
 	verifyFresh          bool
+	verifyConcurrency    int
 )
 
 func init() {
@@ -38,6 +40,7 @@ func init() {
 	verifyCmd.Flags().StringVar(&verifyAppContext, "app-context", "", "Path to application_context.json")
 	verifyCmd.Flags().StringVar(&verifyRepoPath, "repo-path", "", "Path to the repository")
 	verifyCmd.Flags().BoolVar(&verifyFresh, "fresh", false, "Ignore checkpoint and reverify all findings from scratch")
+	verifyCmd.Flags().IntVarP(&verifyConcurrency, "concurrency", "j", 4, "Number of concurrent LLM calls (default: 4)")
 }
 
 func runVerify(cmd *cobra.Command, args []string) {
@@ -82,6 +85,9 @@ func runVerify(cmd *cobra.Command, args []string) {
 	}
 	if verifyFresh {
 		pyArgs = append(pyArgs, "--fresh")
+	}
+	if verifyConcurrency != 4 {
+		pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", verifyConcurrency))
 	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())

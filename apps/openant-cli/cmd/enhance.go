@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/knostic/open-ant-cli/internal/output"
@@ -29,6 +30,7 @@ var (
 	enhanceMode           string
 	enhanceFresh          bool
 	enhanceSkipErrors     bool
+	enhanceConcurrency    int
 )
 
 func init() {
@@ -38,6 +40,7 @@ func init() {
 	enhanceCmd.Flags().StringVar(&enhanceMode, "mode", "agentic", "Enhancement mode: agentic (thorough) or single-shot (fast)")
 	enhanceCmd.Flags().BoolVar(&enhanceFresh, "fresh", false, "Ignore checkpoint and reprocess all units from scratch")
 	enhanceCmd.Flags().BoolVar(&enhanceSkipErrors, "skip-errors", false, "Skip errored units instead of retrying them (errors are retried by default)")
+	enhanceCmd.Flags().IntVarP(&enhanceConcurrency, "concurrency", "j", 4, "Number of concurrent LLM calls (default: 4)")
 }
 
 func runEnhance(cmd *cobra.Command, args []string) {
@@ -84,6 +87,9 @@ func runEnhance(cmd *cobra.Command, args []string) {
 	}
 	if enhanceSkipErrors {
 		pyArgs = append(pyArgs, "--skip-errors")
+	}
+	if enhanceConcurrency != 4 {
+		pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", enhanceConcurrency))
 	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())

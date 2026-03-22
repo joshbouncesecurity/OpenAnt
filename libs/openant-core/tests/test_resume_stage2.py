@@ -170,7 +170,7 @@ def _verify_patches():
     mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
     mock_verifier_instance = MagicMock()
     mock_verifier_instance.verify_batch.side_effect = (
-        lambda results, cbr, progress_callback=None, checkpoint_path=None:
+        lambda results, cbr, progress_callback=None, checkpoint_path=None, concurrency=4:
         _mock_verify_batch(results, mock_result)
     )
 
@@ -435,7 +435,7 @@ class TestVerifyCheckpoint:
         mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
         mock_verifier = MagicMock()
         mock_verifier.verify_batch.side_effect = (
-            lambda results, cbr, progress_callback=None, checkpoint_path=None:
+            lambda results, cbr, progress_callback=None, checkpoint_path=None, concurrency=4:
             _mock_verify_batch(results, mock_result)
         )
 
@@ -462,7 +462,7 @@ class TestVerifyCheckpoint:
         mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
         mock_verifier = MagicMock()
         mock_verifier.verify_batch.side_effect = (
-            lambda results, cbr, progress_callback=None, checkpoint_path=None:
+            lambda results, cbr, progress_callback=None, checkpoint_path=None, concurrency=4:
             _mock_verify_batch(results, mock_result)
         )
 
@@ -506,7 +506,7 @@ class TestVerifyCheckpoint:
         mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
         mock_verifier = MagicMock()
         mock_verifier.verify_batch.side_effect = (
-            lambda results, cbr, progress_callback=None, checkpoint_path=None:
+            lambda results, cbr, progress_callback=None, checkpoint_path=None, concurrency=4:
             _mock_verify_batch(results, mock_result)
         )
 
@@ -544,7 +544,7 @@ class TestVerifyCheckpoint:
         mock_result = MockVerificationResult(agree=True, correct_finding="vulnerable")
         mock_verifier = MagicMock()
         mock_verifier.verify_batch.side_effect = (
-            lambda results, cbr, progress_callback=None, checkpoint_path=None:
+            lambda results, cbr, progress_callback=None, checkpoint_path=None, concurrency=4:
             _mock_verify_batch(results, mock_result)
         )
 

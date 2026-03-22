@@ -31,6 +31,22 @@ def _output_json(data: dict):
     sys.stdout.write("\n")
 
 
+def _validate_concurrency(value: int) -> int:
+    """Validate and return concurrency value, warn if using local mode."""
+    if value < 1:
+        raise argparse.ArgumentTypeError(f"--concurrency must be >= 1, got {value}")
+    if value > 1:
+        from utilities.local_claude import is_enabled as _use_local_claude
+        if _use_local_claude():
+            print(
+                f"[Warning] concurrency={value} with OPENANT_LOCAL_CLAUDE=true "
+                f"will spawn {value} simultaneous claude CLI processes. "
+                f"Use --concurrency 1 if this causes issues.",
+                file=sys.stderr,
+            )
+    return value
+
+
 def cmd_scan(args):
     """Scan a repository end-to-end."""
     from core.scanner import scan_repository
@@ -39,6 +55,7 @@ def cmd_scan(args):
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_")
 
     try:
+        concurrency = _validate_concurrency(args.concurrency)
         result = scan_repository(
             repo_path=args.repo,
             output_dir=output_dir,
@@ -54,6 +71,7 @@ def cmd_scan(args):
             enhance_mode=args.enhance_mode,
             dynamic_test=args.dynamic_test,
             fresh=args.fresh,
+            concurrency=concurrency,
         )
 
         _output_json(success(result.to_dict()))
@@ -132,6 +150,7 @@ def cmd_enhance(args):
             "repo_path": os.path.abspath(args.repo_path) if args.repo_path else None,
             "mode": args.mode,
         }) as ctx:
+            concurrency = _validate_concurrency(args.concurrency)
             result = enhance_dataset(
                 dataset_path=args.dataset,
                 output_path=output_path,
@@ -140,6 +159,7 @@ def cmd_enhance(args):
                 mode=args.mode,
                 fresh=args.fresh,
                 skip_errors=args.skip_errors,
+                concurrency=concurrency,
             )
 
             ctx.summary = {
@@ -179,6 +199,7 @@ def cmd_analyze(args):
             "exploitable_only": args.exploitable_only,
             "limit": args.limit,
         }) as ctx:
+            concurrency = _validate_concurrency(args.concurrency)
             result = run_analysis(
                 dataset_path=args.dataset,
                 output_dir=output_dir,
@@ -190,6 +211,7 @@ def cmd_analyze(args):
                 exploitable_only=args.exploitable_only,
                 fresh=args.fresh,
                 skip_errors=args.skip_errors,
+                concurrency=concurrency,
             )
 
             ctx.summary = {
@@ -225,6 +247,7 @@ def cmd_analyze(args):
                         analyzer_output_path=args.analyzer_output,
                         app_context_path=args.app_context,
                         repo_path=args.repo_path,
+                        concurrency=concurrency,
                     )
 
                     vctx.summary = {
@@ -270,6 +293,7 @@ def cmd_verify(args):
             "app_context_path": os.path.abspath(args.app_context) if args.app_context else None,
             "repo_path": os.path.abspath(args.repo_path) if args.repo_path else None,
         }) as ctx:
+            concurrency = _validate_concurrency(args.concurrency)
             result = run_verification(
                 results_path=args.results,
                 output_dir=output_dir,
@@ -277,6 +301,7 @@ def cmd_verify(args):
                 app_context_path=args.app_context,
                 repo_path=args.repo_path,
                 fresh=args.fresh,
+                concurrency=concurrency,
             )
 
             ctx.summary = {
@@ -507,6 +532,8 @@ def main():
     scan_p.add_argument("--model", choices=["opus", "sonnet"], default="opus", help="Model (default: opus)")
     scan_p.add_argument("--fresh", action="store_true",
                         help="Ignore previous progress and rerun all steps from scratch")
+    scan_p.add_argument("--concurrency", "-j", type=int, default=4,
+                        help="Number of concurrent LLM calls (default: 4)")
     scan_p.set_defaults(func=cmd_scan)
 
     # ---------------------------------------------------------------
@@ -549,6 +576,8 @@ def main():
         default="agentic",
         help="Enhancement mode (default: agentic — thorough but more expensive)",
     )
+    enhance_p.add_argument("--concurrency", "-j", type=int, default=4,
+                           help="Number of concurrent LLM calls (default: 4)")
     enhance_p.set_defaults(func=cmd_enhance)
 
     # ---------------------------------------------------------------
@@ -569,6 +598,8 @@ def main():
                            help="Ignore checkpoint and reanalyze all units from scratch")
     analyze_p.add_argument("--skip-errors", action="store_true",
                            help="Skip errored units instead of retrying them")
+    analyze_p.add_argument("--concurrency", "-j", type=int, default=4,
+                           help="Number of concurrent LLM calls (default: 4)")
     analyze_p.set_defaults(func=cmd_analyze)
 
     # ---------------------------------------------------------------
@@ -582,6 +613,8 @@ def main():
     verify_p.add_argument("--output", "-o", help="Output directory (default: temp dir)")
     verify_p.add_argument("--fresh", action="store_true",
                           help="Ignore checkpoint and reverify all findings from scratch")
+    verify_p.add_argument("--concurrency", "-j", type=int, default=4,
+                          help="Number of concurrent LLM calls (default: 4)")
     verify_p.set_defaults(func=cmd_verify)
 
     # ---------------------------------------------------------------

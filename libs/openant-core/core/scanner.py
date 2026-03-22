@@ -156,6 +156,7 @@ def scan_repository(
     enhance_mode: str = "agentic",
     dynamic_test: bool = False,
     fresh: bool = False,
+    concurrency: int = 4,
 ) -> ScanResult:
     """Scan a repository for vulnerabilities.
 
@@ -380,6 +381,7 @@ def scan_repository(
                     mode=enhance_mode,
                     checkpoint_path=checkpoint_path,
                     fresh=fresh,
+                    concurrency=concurrency,
                 )
 
                 ctx.summary = {
@@ -438,6 +440,7 @@ def scan_repository(
                 repo_path=repo_path,
                 limit=limit,
                 model=model,
+                concurrency=concurrency,
             )
 
             ctx.summary = {
@@ -518,6 +521,7 @@ def scan_repository(
                     analyzer_output_path=parse_result.analyzer_output_path,
                     app_context_path=app_context_path,
                     repo_path=repo_path,
+                    concurrency=concurrency,
                 )
 
                 ctx.summary = {

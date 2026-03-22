@@ -33,6 +33,7 @@ var (
 	analyzeModel          string
 	analyzeFresh          bool
 	analyzeSkipErrors     bool
+	analyzeConcurrency    int
 )
 
 func init() {
@@ -46,6 +47,7 @@ func init() {
 	analyzeCmd.Flags().StringVar(&analyzeModel, "model", "opus", "Model: opus or sonnet")
 	analyzeCmd.Flags().BoolVar(&analyzeFresh, "fresh", false, "Ignore checkpoint and reanalyze all units from scratch")
 	analyzeCmd.Flags().BoolVar(&analyzeSkipErrors, "skip-errors", false, "Skip errored units instead of retrying them (errors are retried by default)")
+	analyzeCmd.Flags().IntVarP(&analyzeConcurrency, "concurrency", "j", 4, "Number of concurrent LLM calls (default: 4)")
 }
 
 func runAnalyze(cmd *cobra.Command, args []string) {
@@ -105,6 +107,9 @@ func runAnalyze(cmd *cobra.Command, args []string) {
 	}
 	if analyzeSkipErrors {
 		pyArgs = append(pyArgs, "--skip-errors")
+	}
+	if analyzeConcurrency != 4 {
+		pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", analyzeConcurrency))
 	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())
