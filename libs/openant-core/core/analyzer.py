@@ -9,6 +9,7 @@ Stage 2 verification is handled separately by ``core.verifier``.
 
 import json
 import os
+import shutil
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -61,6 +62,7 @@ def run_analysis(
     exploitable_only: bool = False,
     checkpoint_path: str | None = None,
     fresh: bool = False,
+    skip_errors: bool = False,
 ) -> AnalyzeResult:
     """Run Stage 1 vulnerability detection on a dataset.
 
@@ -81,6 +83,8 @@ def run_analysis(
             by the agentic enhancer (requires enhanced dataset).
         checkpoint_path: Path to save/resume checkpoint. Auto-generated if None.
         fresh: If True, delete existing checkpoint and reanalyze all units.
+        skip_errors: If True, skip errored units instead of retrying them.
+            By default, errored units are automatically retried on re-run.
 
     Returns:
         AnalyzeResult with results path, metrics, and usage.
@@ -93,6 +97,10 @@ def run_analysis(
     if checkpoint_path is None:
         checkpoint_path = os.path.join(output_dir, "analyze_checkpoint.json")
 
+    # Validate flag combinations
+    if fresh and skip_errors:
+        raise ValueError("Cannot use both --fresh and --skip-errors")
+
     # Handle fresh mode
     if fresh:
         if os.path.exists(checkpoint_path):
@@ -101,27 +109,40 @@ def run_analysis(
         # Skip-when-already-complete: output exists and no checkpoint means previous run succeeded
         has_checkpoint = os.path.exists(checkpoint_path)
         if os.path.exists(results_path) and not has_checkpoint:
-            print(f"[Analyze] Already complete: {results_path}", file=sys.stderr)
-            print("[Analyze] Use --fresh to reanalyze all units from scratch.", file=sys.stderr)
-
+            # Check if there are errored units worth retrying
             experiment = read_json(results_path)
-
-            metrics_data = experiment.get("metrics", {})
-            metrics = AnalysisMetrics(
-                total=metrics_data.get("total", 0),
-                vulnerable=metrics_data.get("vulnerable", 0),
-                bypassable=metrics_data.get("bypassable", 0),
-                inconclusive=metrics_data.get("inconclusive", 0),
-                protected=metrics_data.get("protected", 0),
-                safe=metrics_data.get("safe", 0),
-                errors=metrics_data.get("errors", 0),
+            error_count = sum(
+                1 for r in experiment.get("results", [])
+                if r.get("verdict") == "ERROR"
             )
 
-            return AnalyzeResult(
-                results_path=results_path,
-                metrics=metrics,
-                usage=UsageInfo(),
-            )
+            if error_count > 0 and not skip_errors:
+                # Copy completed results to checkpoint path so the resume
+                # logic re-processes errored units. This works because
+                # results.json and the checkpoint format share the same
+                # top-level keys ("results", "code_by_route").
+                shutil.copy2(results_path, checkpoint_path)
+                print(f"[Analyze] Retrying {error_count} errored units from: {results_path}", file=sys.stderr)
+            else:
+                print(f"[Analyze] Already complete: {results_path}", file=sys.stderr)
+                print("[Analyze] Use --fresh to reanalyze all units from scratch.", file=sys.stderr)
+
+                metrics_data = experiment.get("metrics", {})
+                metrics = AnalysisMetrics(
+                    total=metrics_data.get("total", 0),
+                    vulnerable=metrics_data.get("vulnerable", 0),
+                    bypassable=metrics_data.get("bypassable", 0),
+                    inconclusive=metrics_data.get("inconclusive", 0),
+                    protected=metrics_data.get("protected", 0),
+                    safe=metrics_data.get("safe", 0),
+                    errors=metrics_data.get("errors", 0),
+                )
+
+                return AnalyzeResult(
+                    results_path=results_path,
+                    metrics=metrics,
+                    usage=UsageInfo(),
+                )
 
     # Reset tracking for this analysis run
     tracking.reset_tracking()
@@ -179,6 +200,10 @@ def run_analysis(
             cp = read_json(checkpoint_path)
             results = cp.get("results", [])
             code_by_route = cp.get("code_by_route", {})
+            if not skip_errors:
+                # Filter out errored results so they get reprocessed.
+                # This zeroes their counts; they'll be recounted after reprocessing.
+                results = [r for r in results if r.get("verdict") != "ERROR"]
             completed_ids = {r["unit_id"] for r in results}
             # Recount from checkpoint
             for r in results:

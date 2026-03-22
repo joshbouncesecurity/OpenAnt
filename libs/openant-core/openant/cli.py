@@ -139,6 +139,7 @@ def cmd_enhance(args):
                 repo_path=args.repo_path,
                 mode=args.mode,
                 fresh=args.fresh,
+                skip_errors=args.skip_errors,
             )
 
             ctx.summary = {
@@ -188,6 +189,7 @@ def cmd_analyze(args):
                 model=args.model,
                 exploitable_only=args.exploitable_only,
                 fresh=args.fresh,
+                skip_errors=args.skip_errors,
             )
 
             ctx.summary = {
@@ -539,6 +541,8 @@ def main():
     enhance_p.add_argument("--output", "-o", help="Output path for enhanced dataset (default: {input}_enhanced.json)")
     enhance_p.add_argument("--fresh", action="store_true",
                            help="Ignore checkpoint and reprocess all units from scratch")
+    enhance_p.add_argument("--skip-errors", action="store_true",
+                           help="Skip errored units instead of retrying them")
     enhance_p.add_argument(
         "--mode",
         choices=["agentic", "single-shot"],
@@ -563,6 +567,8 @@ def main():
     analyze_p.add_argument("--model", choices=["opus", "sonnet"], default="opus", help="Model (default: opus)")
     analyze_p.add_argument("--fresh", action="store_true",
                            help="Ignore checkpoint and reanalyze all units from scratch")
+    analyze_p.add_argument("--skip-errors", action="store_true",
+                           help="Skip errored units instead of retrying them")
     analyze_p.set_defaults(func=cmd_analyze)
 
     # ---------------------------------------------------------------
