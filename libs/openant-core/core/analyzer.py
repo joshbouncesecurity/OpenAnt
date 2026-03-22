@@ -11,6 +11,8 @@ import json
 import os
 import shutil
 import sys
+import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -190,7 +192,6 @@ def run_analysis(
         "vulnerable": 0,
         "bypassable": 0,
         "inconclusive": 0,
-        "insufficient_context": 0,
         "protected": 0,
         "safe": 0,
         "errors": 0,
@@ -240,13 +241,11 @@ def run_analysis(
 
     # Per-thread client/corrector to avoid last_call race on shared AnthropicClient.
     # Using threading.local() so each thread creates once and reuses.
-    import threading as _threading
-    import time as _time
-    _thread_local = _threading.local()
+    _thread_local = threading.local()
 
     def _analyze_one(unit):
         """Process a single unit (called from worker thread)."""
-        start = _time.monotonic()
+        start = time.monotonic()
         if not hasattr(_thread_local, "client"):
             _thread_local.client = AnthropicClient(model=model_id)
             _thread_local.corrector = JSONCorrector(_thread_local.client)
@@ -256,12 +255,13 @@ def run_analysis(
             json_corrector=_thread_local.corrector,
             app_context=app_context,
         )
-        result["_elapsed"] = _time.monotonic() - start
+        result["_elapsed"] = time.monotonic() - start
         return result
 
     def _on_complete(unit, result):
         """Called under lock after successful analysis."""
         uid = unit.get("id", "unknown")
+        unit_elapsed = result.pop("_elapsed", 0.0)
         result["unit_id"] = uid
         if not result.get("finding") and result.get("verdict"):
             result["finding"] = result["verdict"].lower()
@@ -283,7 +283,7 @@ def run_analysis(
 
         if checkpoint_path:
             _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id)
-        progress.report(unit_label=uid, detail=finding, unit_elapsed=result.get("_elapsed", 0.0))
+        progress.report(unit_label=uid, detail=finding, unit_elapsed=unit_elapsed)
 
     def _on_error(unit, exc):
         """Called under lock when analysis raises."""
@@ -368,7 +368,6 @@ def run_analysis(
         vulnerable=counts["vulnerable"],
         bypassable=counts["bypassable"],
         inconclusive=counts["inconclusive"],
-        insufficient_context=counts["insufficient_context"],
         protected=counts["protected"],
         safe=counts["safe"],
         errors=counts["errors"],
