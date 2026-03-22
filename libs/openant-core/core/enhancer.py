@@ -5,6 +5,7 @@ Wraps utilities/context_enhancer.py, providing a path-based interface
 for both agentic and single-shot enhancement modes.
 """
 
+import json
 import os
 import sys
 
