@@ -28,7 +28,7 @@ var (
 	enhanceRepoPath       string
 	enhanceMode           string
 	enhanceFresh          bool
-	enhanceRetryErrors    bool
+	enhanceSkipErrors     bool
 )
 
 func init() {
@@ -37,7 +37,7 @@ func init() {
 	enhanceCmd.Flags().StringVar(&enhanceRepoPath, "repo-path", "", "Path to the repository (required for agentic mode)")
 	enhanceCmd.Flags().StringVar(&enhanceMode, "mode", "agentic", "Enhancement mode: agentic (thorough) or single-shot (fast)")
 	enhanceCmd.Flags().BoolVar(&enhanceFresh, "fresh", false, "Ignore checkpoint and reprocess all units from scratch")
-	enhanceCmd.Flags().BoolVar(&enhanceRetryErrors, "retry-errors", false, "Re-process only errored units from a previous completed run")
+	enhanceCmd.Flags().BoolVar(&enhanceSkipErrors, "skip-errors", false, "Skip errored units instead of retrying them")
 }
 
 func runEnhance(cmd *cobra.Command, args []string) {
@@ -82,8 +82,8 @@ func runEnhance(cmd *cobra.Command, args []string) {
 	if enhanceFresh {
 		pyArgs = append(pyArgs, "--fresh")
 	}
-	if enhanceRetryErrors {
-		pyArgs = append(pyArgs, "--retry-errors")
+	if enhanceSkipErrors {
+		pyArgs = append(pyArgs, "--skip-errors")
 	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())

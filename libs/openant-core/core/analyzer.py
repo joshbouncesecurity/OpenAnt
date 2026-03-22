@@ -61,7 +61,7 @@ def run_analysis(
     exploitable_only: bool = False,
     checkpoint_path: str | None = None,
     fresh: bool = False,
-    retry_errors: bool = False,
+    skip_errors: bool = False,
 ) -> AnalyzeResult:
     """Run Stage 1 vulnerability detection on a dataset.
 
@@ -95,8 +95,8 @@ def run_analysis(
         checkpoint_path = os.path.join(output_dir, "analyze_checkpoint.json")
 
     # Validate flag combinations
-    if fresh and retry_errors:
-        raise ValueError("Cannot use both --fresh and --retry-errors")
+    if fresh and skip_errors:
+        raise ValueError("Cannot use both --fresh and --skip-errors")
 
     # Handle fresh mode
     if fresh:
@@ -106,18 +106,19 @@ def run_analysis(
         # Skip-when-already-complete: output exists and no checkpoint means previous run succeeded
         has_checkpoint = os.path.exists(checkpoint_path)
         if os.path.exists(results_path) and not has_checkpoint:
-            if retry_errors:
+            # Check if there are errored units worth retrying
+            experiment = read_json(results_path)
+            error_count = experiment.get("metrics", {}).get("errors", 0)
+
+            if error_count > 0 and not skip_errors:
                 # Copy completed results to checkpoint path so the resume
                 # logic re-processes errored units.
                 import shutil
                 shutil.copy2(results_path, checkpoint_path)
-                print(f"[Analyze] Retrying errored units from: {results_path}", file=sys.stderr)
+                print(f"[Analyze] Retrying {error_count} errored units from: {results_path}", file=sys.stderr)
             else:
                 print(f"[Analyze] Already complete: {results_path}", file=sys.stderr)
                 print("[Analyze] Use --fresh to reanalyze all units from scratch.", file=sys.stderr)
-                print("[Analyze] Use --retry-errors to reprocess only errored units.", file=sys.stderr)
-
-                experiment = read_json(results_path)
 
                 metrics_data = experiment.get("metrics", {})
                 metrics = AnalysisMetrics(
@@ -192,7 +193,7 @@ def run_analysis(
             cp = read_json(checkpoint_path)
             results = cp.get("results", [])
             code_by_route = cp.get("code_by_route", {})
-            if retry_errors:
+            if not skip_errors:
                 # Filter out errored results so they get reprocessed
                 results = [r for r in results if r.get("verdict") != "ERROR"]
             completed_ids = {r["unit_id"] for r in results}
