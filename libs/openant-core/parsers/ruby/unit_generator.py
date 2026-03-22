@@ -29,7 +29,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from utilities.file_io import read_json, write_json
+from utilities.file_io import read_json, write_json, open_utf8
 
 
 # File boundary marker for enhanced code (Ruby uses # comments)
@@ -375,7 +375,8 @@ Examples:
         output = json.dumps(result, indent=2)
 
         if args.output:
-            write_json(args.output, result)
+            with open_utf8(args.output, 'w') as f:
+                f.write(output)
             print(f"\nOutput written to: {args.output}", file=sys.stderr)
         else:
             print(output)
