@@ -43,10 +43,9 @@ from enum import Enum
 from pathlib import Path
 from typing import Set
 
-# Add parent directory to path for utilities import
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utilities.context_enhancer import ContextEnhancer
 from utilities.agentic_enhancer import EntryPointDetector, ReachabilityAnalyzer
+from utilities.file_io import open_utf8, read_json, write_json, run_utf8
 
 
 class ProcessingLevel(Enum):
@@ -115,7 +114,7 @@ class GoPipelineTest:
         if not os.path.exists(self.go_parser):
             print("Building Go parser...")
             go_parser_dir = os.path.join(self.parser_dir, 'go_parser')
-            result = subprocess.run(
+            result = run_utf8(
                 ['go', 'build', '-o', 'go_parser', '.'],
                 cwd=go_parser_dir,
                 capture_output=True,
@@ -140,7 +139,7 @@ class GoPipelineTest:
         start_time = datetime.now()
 
         try:
-            result = subprocess.run(
+            result = run_utf8(
                 command,
                 capture_output=True,
                 text=True,
@@ -168,8 +167,7 @@ class GoPipelineTest:
 
                 # Load and summarize output
                 if os.path.exists(output_file):
-                    with open(output_file, 'r') as f:
-                        data = json.load(f)
+                    data = read_json(output_file)
                     stage_result['summary'] = self._summarize_output(name, data)
             else:
                 print(f"FAIL Failed (exit code {result.returncode})")
@@ -244,11 +242,9 @@ class GoPipelineTest:
         # Post-process: apply dataset name if specified (Go binary doesn't support --name)
         if result.get('success', False) and self.dataset_name and os.path.exists(self.dataset_file):
             try:
-                with open(self.dataset_file, 'r') as f:
-                    dataset = json.load(f)
+                dataset = read_json(self.dataset_file)
                 dataset['name'] = self.dataset_name
-                with open(self.dataset_file, 'w') as f:
-                    json.dump(dataset, f, indent=2)
+                write_json(self.dataset_file, dataset)
             except Exception as e:
                 print(f"Warning: Could not apply dataset name: {e}")
 
@@ -282,8 +278,7 @@ class GoPipelineTest:
 
         try:
             # Load analyzer output for call graph
-            with open(self.analyzer_output_file, 'r') as f:
-                analyzer = json.load(f)
+            analyzer = read_json(self.analyzer_output_file)
 
             functions = analyzer.get("functions", {})
 
@@ -304,8 +299,7 @@ class GoPipelineTest:
                 }
 
             # Load call graph from dataset (go_parser puts it in statistics)
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             # Build call graph from unit metadata
             call_graph = {}
@@ -359,8 +353,7 @@ class GoPipelineTest:
             }
 
             # Write filtered dataset
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -434,7 +427,7 @@ class GoPipelineTest:
                 '--overwrite'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 create_db_cmd,
                 capture_output=True,
                 text=True,
@@ -465,7 +458,7 @@ class GoPipelineTest:
                 f'codeql/{language}-queries:codeql-suites/{language}-security-extended.qls'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 analyze_cmd,
                 capture_output=True,
                 text=True,
@@ -498,8 +491,7 @@ class GoPipelineTest:
                 }
                 return False
 
-            with open(sarif_output, 'r') as f:
-                sarif_data = json.load(f)
+            sarif_data = read_json(sarif_output)
 
             # Extract findings and map to file:line
             self.codeql_findings = []
@@ -620,8 +612,7 @@ class GoPipelineTest:
 
         try:
             # Load dataset to get function line ranges
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             # Build mapping of file -> [(start_line, end_line, func_id)]
             file_functions = {}
@@ -675,8 +666,7 @@ class GoPipelineTest:
             }
 
             # Write filtered dataset
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -733,8 +723,7 @@ class GoPipelineTest:
 
         try:
             # Load dataset
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             # Enhance with LLM
             enhancer = ContextEnhancer()
@@ -771,8 +760,7 @@ class GoPipelineTest:
                 }
 
             # Write back
-            with open(self.dataset_file, 'w') as f:
-                json.dump(enhanced, f, indent=2)
+            write_json(self.dataset_file, enhanced)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -824,8 +812,7 @@ class GoPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             units = dataset.get("units", [])
             original_count = len(units)
@@ -854,8 +841,7 @@ class GoPipelineTest:
             }
 
             # Write filtered dataset
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -1002,23 +988,22 @@ class GoPipelineTest:
 
         # Save results summary
         results_file = os.path.join(self.output_dir, 'pipeline_results.json')
-        with open(results_file, 'w') as f:
-            # Remove stdout/stderr from saved results (too verbose)
-            clean_results = {
-                'repository': self.results['repository'],
-                'test_time': self.results['test_time'],
-                'processing_level': self.results.get('processing_level', 'all'),
-                'success': self.results.get('success', False),
-                'stages': {}
+        # Remove stdout/stderr from saved results (too verbose)
+        clean_results = {
+            'repository': self.results['repository'],
+            'test_time': self.results['test_time'],
+            'processing_level': self.results.get('processing_level', 'all'),
+            'success': self.results.get('success', False),
+            'stages': {}
+        }
+        for stage_name, stage_result in self.results['stages'].items():
+            clean_results['stages'][stage_name] = {
+                'success': stage_result.get('success', False),
+                'elapsed_seconds': stage_result.get('elapsed_seconds', 0),
+                'output_file': stage_result.get('output_file'),
+                'summary': stage_result.get('summary', {})
             }
-            for stage_name, stage_result in self.results['stages'].items():
-                clean_results['stages'][stage_name] = {
-                    'success': stage_result.get('success', False),
-                    'elapsed_seconds': stage_result.get('elapsed_seconds', 0),
-                    'output_file': stage_result.get('output_file'),
-                    'summary': stage_result.get('summary', {})
-                }
-            json.dump(clean_results, f, indent=2)
+        write_json(results_file, clean_results)
 
         print(f"Results summary: {results_file}")
 

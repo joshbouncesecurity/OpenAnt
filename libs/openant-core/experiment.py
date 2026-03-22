@@ -34,6 +34,7 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from utilities.file_io import read_json, write_json
 from utilities.llm_client import AnthropicClient, get_global_tracker
 from prompts.prompt_selector import get_analysis_prompt
 from prompts.vulnerability_analysis import get_system_prompt as get_stage1_system_prompt
@@ -211,8 +212,7 @@ def load_dataset(name: str, enhanced: bool = False) -> dict:
     if not path or not os.path.exists(path):
         raise ValueError(f"Dataset not found: {name} (enhanced={enhanced})")
 
-    with open(path, "r") as f:
-        return json.load(f)
+    return read_json(path)
 
 
 def load_ground_truth(name: str) -> dict:
@@ -221,8 +221,7 @@ def load_ground_truth(name: str) -> dict:
     if not path or not os.path.exists(path):
         return {}
 
-    with open(path, "r") as f:
-        return json.load(f)
+    return read_json(path)
 
 
 def get_ground_truth_verdict(ground_truth: dict, route_key: str) -> str:
@@ -1028,8 +1027,7 @@ def main():
         suffix = "" if args.no_enhanced else "_enhanced"
         output_path = f"experiment_{args.dataset}_{args.model}{suffix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
-    with open(output_path, "w") as f:
-        json.dump(experiment, f, indent=2)
+    write_json(output_path, experiment)
 
     print()
     print(f"Results saved to: {output_path}")

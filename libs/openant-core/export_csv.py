@@ -26,14 +26,15 @@ Example:
 
 import argparse
 import csv
-import json
+import os
 import sys
+
+from utilities.file_io import read_json
 
 
 def load_json(path: str) -> dict:
     """Load JSON file."""
-    with open(path, 'r') as f:
-        return json.load(f)
+    return read_json(path)
 
 
 def extract_file(unit_id: str) -> str:

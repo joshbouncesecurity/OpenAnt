@@ -17,6 +17,7 @@ from core.schemas import AnalyzeResult, AnalysisMetrics, UsageInfo
 from core import tracking
 from core.progress import ProgressReporter
 from core.utils import atomic_write_json
+from utilities.file_io import read_json
 
 # Import existing analysis machinery
 from utilities.llm_client import AnthropicClient, get_global_tracker
@@ -103,8 +104,7 @@ def run_analysis(
             print(f"[Analyze] Already complete: {results_path}", file=sys.stderr)
             print("[Analyze] Use --fresh to reanalyze all units from scratch.", file=sys.stderr)
 
-            with open(results_path) as f:
-                experiment = json.load(f)
+            experiment = read_json(results_path)
 
             metrics_data = experiment.get("metrics", {})
             metrics = AnalysisMetrics(
@@ -144,8 +144,7 @@ def run_analysis(
 
     # Load dataset
     print(f"[Analyze] Loading dataset: {dataset_path}", file=sys.stderr)
-    with open(dataset_path) as f:
-        dataset = json.load(f)
+    dataset = read_json(dataset_path)
 
     units = dataset.get("units", [])
 
@@ -177,8 +176,7 @@ def run_analysis(
     completed_ids = set()
     if checkpoint_path and os.path.exists(checkpoint_path):
         try:
-            with open(checkpoint_path) as f:
-                cp = json.load(f)
+            cp = read_json(checkpoint_path)
             results = cp.get("results", [])
             code_by_route = cp.get("code_by_route", {})
             completed_ids = {r["unit_id"] for r in results}

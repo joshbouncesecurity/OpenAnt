@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.utils import atomic_write_json
+from utilities.file_io import read_json, write_json, open_utf8
 
 # Pre-import modules so we can patch attributes on them
 import core.analyzer as analyzer_mod
@@ -46,8 +47,7 @@ def _make_dataset(tmp_path, num_units=5):
 
     dataset = {"units": units, "metadata": {}}
     dataset_path = str(tmp_path / "dataset.json")
-    with open(dataset_path, "w") as f:
-        json.dump(dataset, f)
+    write_json(dataset_path, dataset)
 
     return dataset_path
 
@@ -82,14 +82,12 @@ def _make_results(tmp_path, num_results=5, vulnerable_count=2):
     }
 
     results_path = str(tmp_path / "results.json")
-    with open(results_path, "w") as f:
-        json.dump(experiment, f)
+    write_json(results_path, experiment)
 
     # Create a minimal analyzer_output.json
     ao = {"functions": {}, "files": {}}
     ao_path = str(tmp_path / "analyzer_output.json")
-    with open(ao_path, "w") as f:
-        json.dump(ao, f)
+    write_json(ao_path, ao)
 
     return results_path, ao_path
 
@@ -246,8 +244,7 @@ class TestAnalyzeCheckpoint:
 
         # Checkpoint should exist with the 2 completed units
         assert os.path.exists(checkpoint_path)
-        with open(checkpoint_path) as f:
-            cp = json.load(f)
+        cp = read_json(checkpoint_path)
         assert len(cp["results"]) == 2
 
         # Second run: all succeed — should skip the 2 already done
@@ -302,7 +299,7 @@ class TestAnalyzeCheckpoint:
 
         # Create corrupt checkpoint
         os.makedirs(output_dir, exist_ok=True)
-        with open(checkpoint_path, "w") as f:
+        with open_utf8(checkpoint_path, "w") as f:
             f.write("{corrupt json!!!}")
 
         with patch.object(analyzer_mod, "AnthropicClient"), \
@@ -415,8 +412,7 @@ class TestAnalyzeCheckpoint:
 
         _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, "dataset.json", "opus")
 
-        with open(checkpoint_path) as f:
-            cp = json.load(f)
+        cp = read_json(checkpoint_path)
 
         assert len(cp["results"]) == 2
         assert cp["code_by_route"] == code_by_route
@@ -597,8 +593,7 @@ class TestVerifyBatchCheckpoint:
 
         _save_verify_checkpoint(checkpoint_path, results, completed_keys)
 
-        with open(checkpoint_path) as f:
-            cp = json.load(f)
+        cp = read_json(checkpoint_path)
 
         assert set(cp["completed_keys"]) == {"route_0"}
         assert len(cp["verified"]) == 1

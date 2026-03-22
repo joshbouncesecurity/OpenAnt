@@ -4,9 +4,10 @@ Requires Node.js and npm dependencies installed:
   cd parsers/javascript && npm install
 """
 import json
-import subprocess
 import shutil
 from pathlib import Path
+
+from utilities.file_io import run_utf8
 
 import pytest
 
@@ -23,7 +24,7 @@ pytestmark = pytest.mark.skipif(
 def run_node(script_name, *args):
     """Run a Node.js script from the JS parsers directory."""
     cmd = ["node", str(PARSERS_JS_DIR / script_name)] + list(args)
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+    result = run_utf8(cmd, capture_output=True, text=True, timeout=30)
     return result
 
 

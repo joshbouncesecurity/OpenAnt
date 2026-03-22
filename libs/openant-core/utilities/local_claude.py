@@ -17,6 +17,8 @@ import subprocess
 import sys
 import uuid
 
+from .file_io import run_utf8
+
 
 def is_enabled() -> bool:
     """Check if local Claude Code mode is enabled."""
@@ -50,7 +52,7 @@ def _run_claude_cli(prompt: str, model: str, system: str = None) -> dict:
     # Unset CLAUDECODE to allow spawning from within a Claude Code session
     env = {k: v for k, v in os.environ.items() if k != "CLAUDECODE"}
 
-    result = subprocess.run(
+    result = run_utf8(
         cmd,
         capture_output=True,
         text=True,

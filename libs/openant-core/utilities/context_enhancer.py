@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Callable, Optional
 
+from .file_io import read_json, write_json
 from .llm_client import AnthropicClient, TokenTracker, get_global_tracker
 from .agentic_enhancer import enhance_unit_with_agent, load_index_from_file
 
@@ -375,8 +376,7 @@ class ContextEnhancer:
             checkpoint_file = Path(checkpoint_path)
             if checkpoint_file.exists():
                 self._log("info", f"Found checkpoint at {checkpoint_path}, resuming...")
-                with open(checkpoint_file, 'r') as f:
-                    checkpoint_data = json.load(f)
+                checkpoint_data = read_json(checkpoint_file)
 
                 # Build set of already-processed unit IDs
                 for cp_unit in checkpoint_data.get("units", []):
@@ -657,8 +657,7 @@ def main():
         logging.error(f"Error: Input file not found: {input_path}")
         return 1
 
-    with open(input_path, 'r') as f:
-        dataset = json.load(f)
+    dataset = read_json(input_path)
 
     # Enhance
     enhancer = ContextEnhancer()
@@ -688,8 +687,7 @@ def main():
 
     # Write output
     output_path = Path(args.output) if args.output else input_path
-    with open(output_path, 'w') as f:
-        json.dump(enhanced, f, indent=2)
+    write_json(output_path, enhanced)
 
     logging.info(f"Enhanced dataset written to: {output_path}")
     return 0

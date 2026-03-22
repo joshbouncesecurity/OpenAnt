@@ -15,6 +15,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from core.scanner import _check_step_completed, _load_parse_state, _load_analyze_state, _load_verify_state
 from core.schemas import UsageInfo
+from utilities.file_io import read_json, write_json, open_utf8
 
 
 # ---------------------------------------------------------------------------
@@ -24,8 +25,7 @@ from core.schemas import UsageInfo
 def _write_json(path, data):
     """Write JSON to a file, creating parent dirs."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    with open(path, "w") as f:
-        json.dump(data, f)
+    write_json(path, data)
 
 
 def _make_step_report(output_dir, step, status="success", summary=None, outputs=None):
@@ -67,8 +67,7 @@ def _setup_parse_complete(output_dir, units_count=5, language="python"):
 def _setup_enhance_complete(output_dir, dataset_path):
     """Set up a completed enhance step with output files."""
     enhanced_path = os.path.join(output_dir, "dataset_enhanced.json")
-    with open(dataset_path) as f:
-        dataset = json.load(f)
+    dataset = read_json(dataset_path)
     for unit in dataset.get("units", []):
         unit["agent_context"] = {"security_classification": "neutral"}
     _write_json(enhanced_path, dataset)
@@ -117,7 +116,7 @@ def _setup_report_complete(output_dir):
     report_dir = os.path.join(output_dir, "report")
     os.makedirs(report_dir, exist_ok=True)
     summary_path = os.path.join(report_dir, "SUMMARY_REPORT.md")
-    with open(summary_path, "w") as f:
+    with open_utf8(summary_path, "w") as f:
         f.write("# Summary Report\n")
 
     _make_step_report(output_dir, "report",
@@ -160,7 +159,7 @@ class TestCheckStepCompleted:
     def test_check_step_corrupt_json(self, tmp_path):
         """Report file with invalid JSON -> returns None."""
         report_path = str(tmp_path / "parse.report.json")
-        with open(report_path, "w") as f:
+        with open_utf8(report_path, "w") as f:
             f.write("{invalid json")
         assert _check_step_completed(str(tmp_path), "parse") is None
 
@@ -168,7 +167,7 @@ class TestCheckStepCompleted:
         """Report says success but output file is invalid JSON -> returns None."""
         output_dir = str(tmp_path)
         dataset_path = os.path.join(output_dir, "dataset.json")
-        with open(dataset_path, "w") as f:
+        with open_utf8(dataset_path, "w") as f:
             f.write("{truncated")
         _make_step_report(output_dir, "parse",
                           outputs={"dataset_path": dataset_path})
@@ -187,7 +186,7 @@ class TestCheckStepCompleted:
         output_dir = str(tmp_path)
         md_path = os.path.join(output_dir, "report", "SUMMARY_REPORT.md")
         os.makedirs(os.path.dirname(md_path), exist_ok=True)
-        with open(md_path, "w") as f:
+        with open_utf8(md_path, "w") as f:
             f.write("# Report\n")
         _make_step_report(output_dir, "report",
                           outputs={"summary_path": md_path})
@@ -534,8 +533,7 @@ class TestScanResumeIntegration:
             )
 
         scan_report_path = os.path.join(output_dir, "scan.report.json")
-        with open(scan_report_path) as f:
-            scan_report = json.load(f)
+        scan_report = read_json(scan_report_path)
 
         assert "steps_resumed" in scan_report["summary"]
         assert len(scan_report["summary"]["steps_resumed"]) > 0

@@ -14,6 +14,7 @@ from core.schemas import VerifyResult, UsageInfo
 from core import tracking
 from core.progress import ProgressReporter
 from core.utils import atomic_write_json
+from utilities.file_io import read_json
 
 from utilities.llm_client import TokenTracker, get_global_tracker
 from utilities.finding_verifier import FindingVerifier
@@ -74,8 +75,7 @@ def run_verification(
             print(f"[Verify] Already complete: {verified_path}", file=sys.stderr)
             print("[Verify] Use --fresh to reverify all findings from scratch.", file=sys.stderr)
 
-            with open(verified_path) as f:
-                verified_data = json.load(f)
+            verified_data = read_json(verified_path)
 
             # Count from existing results
             agreed = 0
@@ -114,8 +114,7 @@ def run_verification(
 
     # Load Stage 1 results
     print(f"[Verify] Loading results: {results_path}", file=sys.stderr)
-    with open(results_path) as f:
-        experiment = json.load(f)
+    experiment = read_json(results_path)
 
     all_results = experiment.get("results", [])
     code_by_route = experiment.get("code_by_route", {})
@@ -180,8 +179,7 @@ def run_verification(
     resumed_count = 0
     if checkpoint_path and os.path.exists(checkpoint_path):
         try:
-            with open(checkpoint_path) as f:
-                cp = json.load(f)
+            cp = read_json(checkpoint_path)
             resumed_count = len(cp.get("completed_keys", []))
         except (json.JSONDecodeError, OSError):
             pass

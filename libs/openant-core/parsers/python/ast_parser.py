@@ -12,11 +12,12 @@ Outputs dataset.json in the same format as the JavaScript parser.
 
 import ast
 import json
-import os
 import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+
+from utilities.file_io import read_json, write_json, open_utf8
 
 
 class PythonRouteParser:
@@ -461,8 +462,7 @@ def main():
     result = parser.parse()
 
     if output_file:
-        with open(output_file, 'w') as f:
-            json.dump(result, f, indent=2)
+        write_json(output_file, result)
         print(f"Output written to {output_file}")
     else:
         print(json.dumps(result, indent=2))

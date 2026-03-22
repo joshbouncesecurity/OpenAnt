@@ -36,6 +36,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from .file_io import read_json
 from .llm_client import TokenTracker, get_global_tracker, create_anthropic_client, create_message
 
 # Null logger that discards all messages (used when no logger provided)
@@ -435,8 +436,7 @@ class FindingVerifier:
         completed_keys = set()
         if checkpoint_path and os.path.exists(checkpoint_path):
             try:
-                with open(checkpoint_path) as f:
-                    cp = json.load(f)
+                cp = read_json(checkpoint_path)
                 completed_keys = set(cp.get("completed_keys", []))
                 # Restore verification data from checkpoint into results
                 cp_by_key = {r["route_key"]: r for r in cp.get("verified", [])}

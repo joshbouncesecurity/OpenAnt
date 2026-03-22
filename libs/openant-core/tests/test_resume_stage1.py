@@ -14,6 +14,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from core.utils import atomic_write_json
+from utilities.file_io import read_json, write_json
 
 
 # ---------------------------------------------------------------------------
@@ -28,8 +29,7 @@ class TestAtomicWriteJson:
         data = {"key": "value", "number": 42}
         atomic_write_json(path, data)
 
-        with open(path) as f:
-            loaded = json.load(f)
+        loaded = read_json(path)
         assert loaded == data
 
     def test_atomic_write_no_partial_on_error(self, tmp_path):
@@ -48,8 +48,7 @@ class TestAtomicWriteJson:
         """If serialization fails, existing target file is not modified."""
         path = str(tmp_path / "output.json")
         original = {"original": True}
-        with open(path, "w") as f:
-            json.dump(original, f)
+        write_json(path, original)
 
         class Unserializable:
             pass
@@ -58,8 +57,7 @@ class TestAtomicWriteJson:
             atomic_write_json(path, {"bad": Unserializable()})
 
         # Original file should still be intact
-        with open(path) as f:
-            loaded = json.load(f)
+        loaded = read_json(path)
         assert loaded == original
 
     def test_atomic_write_overwrites_atomically(self, tmp_path):
@@ -72,8 +70,7 @@ class TestAtomicWriteJson:
         # Overwrite
         atomic_write_json(path, {"version": 2, "data": [1, 2, 3]})
 
-        with open(path) as f:
-            loaded = json.load(f)
+        loaded = read_json(path)
         assert loaded == {"version": 2, "data": [1, 2, 3]}
 
     def test_atomic_write_creates_parent_dirs(self, tmp_path):
@@ -81,8 +78,7 @@ class TestAtomicWriteJson:
         path = str(tmp_path / "sub" / "dir" / "output.json")
         atomic_write_json(path, {"nested": True})
 
-        with open(path) as f:
-            loaded = json.load(f)
+        loaded = read_json(path)
         assert loaded == {"nested": True}
 
     def test_atomic_write_no_temp_files_left(self, tmp_path):
@@ -118,14 +114,12 @@ def _make_dataset(tmp_path, num_units=3):
 
     dataset = {"units": units, "metadata": {}}
     dataset_path = str(tmp_path / "dataset.json")
-    with open(dataset_path, "w") as f:
-        json.dump(dataset, f)
+    write_json(dataset_path, dataset)
 
     # Create minimal analyzer output
     analyzer_output = {"functions": {}, "files": {}}
     ao_path = str(tmp_path / "analyzer_output.json")
-    with open(ao_path, "w") as f:
-        json.dump(analyzer_output, f)
+    write_json(ao_path, analyzer_output)
 
     return dataset_path, ao_path
 
@@ -209,13 +203,11 @@ class TestEnhanceAutoCheckpoint:
         assert result.units_enhanced == 5
 
         # Simulate a partial checkpoint by writing back only 2 processed units
-        with open(output_path) as f:
-            completed = json.load(f)
+        completed = read_json(output_path)
         for unit in completed["units"][2:]:
             unit.pop("agent_context", None)
         completed["metadata"]["checkpoint"] = True
-        with open(checkpoint_path, "w") as f:
-            json.dump(completed, f)
+        write_json(checkpoint_path, completed)
         # Remove output so enhance doesn't skip entirely
         os.remove(output_path)
 
@@ -248,8 +240,7 @@ class TestEnhanceAutoCheckpoint:
         checkpoint_path = str(tmp_path / "enhanced_checkpoint.json")
 
         # Create a fake checkpoint
-        with open(checkpoint_path, "w") as f:
-            json.dump({"units": [], "metadata": {}}, f)
+        write_json(checkpoint_path, {"units": [], "metadata": {}})
 
         result = enhance_dataset(
             dataset_path=dataset_path,

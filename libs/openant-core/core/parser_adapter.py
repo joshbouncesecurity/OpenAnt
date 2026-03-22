@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from core.schemas import ParseResult
+from utilities.file_io import read_json, write_json
 
 # Root of openant-core (where parsers/ lives)
 _CORE_ROOT = Path(__file__).parent.parent
@@ -26,8 +27,7 @@ _LANGUAGES_CONFIG = Path(__file__).parent.parent.parent.parent / "config" / "lan
 
 def _load_language_config() -> dict:
     """Load language detection config from the shared config/languages.json."""
-    with open(_LANGUAGES_CONFIG) as f:
-        return json.load(f)
+    return read_json(_LANGUAGES_CONFIG)
 
 
 def detect_language(repo_path: str) -> str:
@@ -177,8 +177,7 @@ def _apply_reachability_filter(
 
     print(f"\n[Reachability Filter] Filtering to {processing_level} units...", file=sys.stderr)
 
-    with open(call_graph_path, "r") as f:
-        call_graph_data = json.load(f)
+    call_graph_data = read_json(call_graph_path)
 
     functions = call_graph_data.get("functions", {})
     call_graph = call_graph_data.get("call_graph", {})
@@ -284,11 +283,8 @@ def _parse_python(repo_path: str, output_dir: str, processing_level: str, skip_t
         dataset = _apply_reachability_filter(dataset, output_dir, processing_level)
 
     # Write outputs
-    with open(dataset_path, "w") as f:
-        json.dump(dataset, f, indent=2)
-
-    with open(analyzer_output_path, "w") as f:
-        json.dump(analyzer_output, f, indent=2)
+    write_json(dataset_path, dataset)
+    write_json(analyzer_output_path, analyzer_output)
 
     units_count = len(dataset.get("units", []))
     print(f"  Python parser complete: {units_count} units", file=sys.stderr)
@@ -314,11 +310,9 @@ def _parse_javascript(repo_path: str, output_dir: str, processing_level: str, sk
     """
     print("[Parser] Running JavaScript parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "javascript" / "test_pipeline.py"
-
     # Build command — analyzer-path now defaults to co-located file in the parser
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.javascript.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,
@@ -345,8 +339,7 @@ def _parse_javascript(repo_path: str, output_dir: str, processing_level: str, sk
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  JavaScript parser complete: {units_count} units", file=sys.stderr)
@@ -372,10 +365,8 @@ def _parse_go(repo_path: str, output_dir: str, processing_level: str, skip_tests
     """
     print("[Parser] Running Go parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "go" / "test_pipeline.py"
-
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.go.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,
@@ -402,8 +393,7 @@ def _parse_go(repo_path: str, output_dir: str, processing_level: str, skip_tests
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  Go parser complete: {units_count} units", file=sys.stderr)
@@ -431,10 +421,8 @@ def _parse_c(repo_path: str, output_dir: str, processing_level: str, skip_tests:
     """
     print("[Parser] Running C/C++ parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "c" / "test_pipeline.py"
-
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.c.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,
@@ -462,8 +450,7 @@ def _parse_c(repo_path: str, output_dir: str, processing_level: str, skip_tests:
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  C/C++ parser complete: {units_count} units", file=sys.stderr)
@@ -491,10 +478,8 @@ def _parse_ruby(repo_path: str, output_dir: str, processing_level: str, skip_tes
     """
     print("[Parser] Running Ruby parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "ruby" / "test_pipeline.py"
-
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.ruby.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,
@@ -522,8 +507,7 @@ def _parse_ruby(repo_path: str, output_dir: str, processing_level: str, skip_tes
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  Ruby parser complete: {units_count} units", file=sys.stderr)
@@ -551,10 +535,8 @@ def _parse_php(repo_path: str, output_dir: str, processing_level: str, skip_test
     """
     print("[Parser] Running PHP parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "php" / "test_pipeline.py"
-
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.php.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,
@@ -582,8 +564,7 @@ def _parse_php(repo_path: str, output_dir: str, processing_level: str, skip_test
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  PHP parser complete: {units_count} units", file=sys.stderr)

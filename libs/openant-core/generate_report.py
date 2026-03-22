@@ -27,10 +27,12 @@ import argparse
 import json
 import html
 import os
+import sys
 from datetime import datetime
 
 import anthropic
 from dotenv import load_dotenv
+from utilities.file_io import read_json
 
 # Load environment variables from .env file
 load_dotenv()
@@ -42,8 +44,7 @@ MAX_TOKENS = 4096
 
 def load_json(path: str) -> dict:
     """Load JSON file."""
-    with open(path, 'r') as f:
-        return json.load(f)
+    return read_json(path)
 
 
 def extract_file(unit_id: str) -> str:
