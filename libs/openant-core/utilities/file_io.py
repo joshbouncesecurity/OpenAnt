@@ -53,7 +53,7 @@ def run_utf8(*args, **kwargs) -> subprocess.CompletedProcess:
     analysis (parser results are read from JSON files separately).
     Callers can override with ``errors='strict'`` if needed.
     """
-    if kwargs.get("text"):
+    if kwargs.get("text") or kwargs.get("universal_newlines"):
         kwargs.setdefault("encoding", "utf-8")
         kwargs.setdefault("errors", "replace")
     return subprocess.run(*args, **kwargs)

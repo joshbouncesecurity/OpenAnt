@@ -45,7 +45,7 @@ from typing import Set
 
 from utilities.context_enhancer import ContextEnhancer
 from utilities.agentic_enhancer import EntryPointDetector, ReachabilityAnalyzer
-from utilities.file_io import read_json, write_json, open_utf8
+from utilities.file_io import read_json, write_json, open_utf8, run_utf8
 
 # Local imports
 from repository_scanner import RepositoryScanner
@@ -372,7 +372,7 @@ class RubyPipelineTest:
                 '--overwrite'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 create_db_cmd,
                 capture_output=True,
                 text=True,
@@ -403,7 +403,7 @@ class RubyPipelineTest:
                 f'codeql/{language}-queries:codeql-suites/{language}-security-extended.qls'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 analyze_cmd,
                 capture_output=True,
                 text=True,
