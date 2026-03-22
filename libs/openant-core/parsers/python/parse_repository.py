@@ -44,9 +44,14 @@ See Also:
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime
 from pathlib import Path
+
+# Add project root to path for utilities import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utilities.file_io import read_json, write_json, open_utf8
 
 from repository_scanner import RepositoryScanner
 from function_extractor import FunctionExtractor
@@ -138,8 +143,7 @@ def parse_repository(repo_path: str, options: dict = None) -> tuple:
 
     if output_dir:
         scan_file = Path(output_dir) / 'scan_result.json'
-        with open(scan_file, 'w') as f:
-            json.dump(scan_result, f, indent=2)
+        write_json(str(scan_file), scan_result)
         print(f"  Saved: {scan_file}", file=sys.stderr)
 
     # Phase 2: Extract functions
@@ -154,8 +158,7 @@ def parse_repository(repo_path: str, options: dict = None) -> tuple:
 
     if output_dir:
         extract_file = Path(output_dir) / 'functions.json'
-        with open(extract_file, 'w') as f:
-            json.dump(extractor_result, f, indent=2)
+        write_json(str(extract_file), extractor_result)
         print(f"  Saved: {extract_file}", file=sys.stderr)
 
     # Phase 3: Build call graph
@@ -171,8 +174,7 @@ def parse_repository(repo_path: str, options: dict = None) -> tuple:
 
     if output_dir:
         graph_file = Path(output_dir) / 'call_graph.json'
-        with open(graph_file, 'w') as f:
-            json.dump(call_graph_result, f, indent=2)
+        write_json(str(graph_file), call_graph_result)
         print(f"  Saved: {graph_file}", file=sys.stderr)
 
     # Phase 4: Generate units
@@ -199,8 +201,7 @@ def parse_repository(repo_path: str, options: dict = None) -> tuple:
 
     if output_dir:
         analyzer_file = Path(output_dir) / 'analyzer_output.json'
-        with open(analyzer_file, 'w') as f:
-            json.dump(analyzer_output, f, indent=2)
+        write_json(str(analyzer_file), analyzer_output)
         print(f"  Saved: {analyzer_file}", file=sys.stderr)
 
     print(f"\n" + "=" * 60, file=sys.stderr)
@@ -253,7 +254,7 @@ Examples:
         # Save dataset
         dataset_json = json.dumps(dataset, indent=2)
         if args.output:
-            with open(args.output, 'w') as f:
+            with open_utf8(args.output, 'w') as f:
                 f.write(dataset_json)
             print(f"\nDataset written to: {args.output}", file=sys.stderr)
         else:
@@ -261,8 +262,7 @@ Examples:
 
         # Save analyzer output if requested
         if args.analyzer_output:
-            with open(args.analyzer_output, 'w') as f:
-                json.dump(analyzer_output, f, indent=2)
+            write_json(args.analyzer_output, analyzer_output)
             print(f"Analyzer output written to: {args.analyzer_output}", file=sys.stderr)
 
     except Exception as e:

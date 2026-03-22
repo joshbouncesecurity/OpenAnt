@@ -31,6 +31,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from utilities.file_io import read_json, write_json
 from utilities.llm_client import create_anthropic_client, create_message
 
 # Load environment variables
@@ -544,8 +545,7 @@ def save_context(context: ApplicationContext, output_path: Path) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w') as f:
-        json.dump(asdict(context), f, indent=2)
+    write_json(output_path, asdict(context))
 
     print(f"Context saved to {output_path}", file=sys.stderr)
 
@@ -559,8 +559,7 @@ def load_context(input_path: Path) -> ApplicationContext:
     Returns:
         ApplicationContext loaded from file.
     """
-    with open(input_path) as f:
-        data = json.load(f)
+    data = read_json(input_path)
 
     # Mark as manual to skip validation (already validated when saved)
     original_source = data.get('source', 'llm')

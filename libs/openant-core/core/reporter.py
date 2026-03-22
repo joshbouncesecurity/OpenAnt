@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.schemas import ReportResult
+from utilities.file_io import read_json, write_json
 
 # Root of openant-core
 _CORE_ROOT = Path(__file__).parent.parent
@@ -61,8 +62,7 @@ def build_pipeline_output(
     """
     print(f"[Report] Building pipeline_output.json...", file=sys.stderr)
 
-    with open(results_path) as f:
-        experiment = json.load(f)
+    experiment = read_json(results_path)
 
     all_results = experiment.get("results", [])
     code_by_route = experiment.get("code_by_route", {})
@@ -185,8 +185,7 @@ def build_pipeline_output(
     }
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(pipeline_output, f, indent=2, ensure_ascii=False)
+    write_json(output_path, pipeline_output, ensure_ascii=False)
 
     print(f"  pipeline_output.json: {len(findings_data)} findings", file=sys.stderr)
     print(f"  Written to {output_path}", file=sys.stderr)

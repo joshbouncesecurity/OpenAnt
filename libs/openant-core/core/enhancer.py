@@ -12,6 +12,7 @@ import sys
 from core.schemas import EnhanceResult, UsageInfo
 from core import tracking
 from core.progress import ProgressReporter
+from utilities.file_io import read_json
 
 
 def enhance_dataset(
@@ -58,8 +59,7 @@ def enhance_dataset(
             print("[Enhance] Use --fresh to reprocess all units from scratch.", file=sys.stderr)
 
             # Load the existing output to build the result
-            with open(output_path) as f:
-                enhanced = json.load(f)
+            enhanced = read_json(output_path)
 
             context_key = "agent_context" if mode == "agentic" else "llm_context"
             classifications = {}
@@ -94,8 +94,7 @@ def enhance_dataset(
 
     # Load dataset
     print(f"[Enhance] Loading dataset: {dataset_path}", file=sys.stderr)
-    with open(dataset_path) as f:
-        dataset = json.load(f)
+    dataset = read_json(dataset_path)
 
     units = dataset.get("units", [])
     print(f"[Enhance] Units to enhance: {len(units)}", file=sys.stderr)
@@ -104,8 +103,7 @@ def enhance_dataset(
     resumed_count = 0
     if checkpoint_path and os.path.exists(checkpoint_path):
         try:
-            with open(checkpoint_path) as f:
-                cp_data = json.load(f)
+            cp_data = read_json(checkpoint_path)
             for cp_unit in cp_data.get("units", []):
                 if cp_unit.get("agent_context") and not cp_unit["agent_context"].get("error"):
                     resumed_count += 1

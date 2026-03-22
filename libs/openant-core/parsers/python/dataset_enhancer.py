@@ -14,6 +14,10 @@ import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+# Add project root to path for utilities import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utilities.file_io import read_json, write_json, open_utf8
+
 
 class PythonDependencyResolver:
     """Resolve and collect Python code dependencies."""
@@ -226,8 +230,7 @@ class PythonDependencyResolver:
 
 def enhance_dataset(dataset_path: str, repo_path: str, output_path: str = None):
     """Enhance a dataset with resolved dependencies."""
-    with open(dataset_path, 'r') as f:
-        dataset = json.load(f)
+    dataset = read_json(dataset_path)
 
     resolver = PythonDependencyResolver(repo_path)
 
@@ -263,8 +266,7 @@ def enhance_dataset(dataset_path: str, repo_path: str, output_path: str = None):
     dataset['enhanced'] = True
 
     if output_path:
-        with open(output_path, 'w') as f:
-            json.dump(dataset, f, indent=2)
+        write_json(output_path, dataset)
         print(f"Enhanced dataset written to {output_path}")
     else:
         print(json.dumps(dataset, indent=2))

@@ -31,6 +31,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
+# Add project root to path for utilities import
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from utilities.file_io import read_json, write_json, open_utf8
+
 
 class RepositoryScanner:
     """
@@ -236,7 +240,7 @@ Examples:
         output = json.dumps(result, indent=2)
 
         if args.output:
-            with open(args.output, 'w') as f:
+            with open_utf8(args.output, 'w') as f:
                 f.write(output)
             print(f"Scan complete. Results written to: {args.output}", file=sys.stderr)
             print(f"Total files found: {result['statistics']['total_files']}", file=sys.stderr)

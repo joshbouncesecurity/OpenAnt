@@ -31,6 +31,7 @@ from core.schemas import (
 )
 from core.step_report import step_context
 from core import tracking
+from utilities.file_io import read_json
 
 
 # Import app context generator (optional)
@@ -55,8 +56,7 @@ def _check_step_completed(output_dir: str, step: str) -> dict | None:
     """
     path = os.path.join(output_dir, f"{step}.report.json")
     try:
-        with open(path) as f:
-            report = json.load(f)
+        report = read_json(path)
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -72,8 +72,7 @@ def _check_step_completed(output_dir: str, step: str) -> dict | None:
         # Validate JSON for .json files
         if output_path.endswith(".json"):
             try:
-                with open(output_path) as f:
-                    json.load(f)
+                read_json(output_path)
             except (OSError, json.JSONDecodeError):
                 return None
 
@@ -772,8 +771,7 @@ def _load_step_report(output_dir: str, step: str) -> dict:
     """Load a step report JSON from disk. Returns empty dict on failure."""
     path = os.path.join(output_dir, f"{step}.report.json")
     try:
-        with open(path) as f:
-            return json.load(f)
+        return read_json(path)
     except Exception:
         return {"step": step, "status": "unknown"}
 
@@ -781,8 +779,7 @@ def _load_step_report(output_dir: str, step: str) -> dict:
 def _read_app_type(app_context_path: str) -> str | None:
     """Read application_type from an app context JSON file."""
     try:
-        with open(app_context_path) as f:
-            data = json.load(f)
+        data = read_json(app_context_path)
         return data.get("application_type")
     except Exception:
         return None

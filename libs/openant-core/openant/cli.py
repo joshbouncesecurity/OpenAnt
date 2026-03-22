@@ -22,6 +22,13 @@ import os
 import sys
 import tempfile
 
+# Ensure project root is on sys.path for utilities imports
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from utilities.file_io import read_json
+
 
 def _output_json(data: dict):
     """Write JSON to stdout."""
@@ -326,8 +333,7 @@ def cmd_build_output(args):
         # Read back the generated file to extract findings count
         findings_count = 0
         try:
-            with open(path) as f:
-                pipeline_data = json.load(f)
+            pipeline_data = read_json(path)
             findings_count = len(pipeline_data.get("findings", []))
         except (OSError, json.JSONDecodeError):
             pass
