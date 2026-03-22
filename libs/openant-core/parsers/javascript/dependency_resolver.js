@@ -134,7 +134,7 @@ class DependencyResolver {
       // Skip 'this' (handled above) and common built-ins
       if (objectName === 'this' || this._isBuiltIn(objectName)) continue;
 
-      const resolved = this._resolveMethodCall(objectName, methodName, callerFile);
+      const resolved = this._resolveMethodCall(objectName, methodName, callerFile, callerFuncId);
       if (resolved && !seenCalls.has(resolved)) {
         seenCalls.add(resolved);
         calls.push(resolved);
@@ -240,20 +240,52 @@ class DependencyResolver {
 
   /**
    * Resolve an object.method call
+   *
+   * Supports two resolution strategies:
+   * 1. Direct class name match: objectName === className
+   * 2. DI-aware resolution: objectName is a constructor-injected parameter,
+   *    use its type annotation to find the target class
    */
-  _resolveMethodCall(objectName, methodName, callerFile) {
-    // Check if objectName matches a class name
-    const qualifiedName = `${objectName}.${methodName}`;
+  _resolveMethodCall(objectName, methodName, callerFile, callerFuncId = null) {
     const candidates = this.functionsByName[methodName];
 
     if (!candidates || !Array.isArray(candidates)) {
       return null;
     }
 
+    // 1. Exact class name match (existing behavior)
     for (const funcId of candidates) {
       const funcData = this.functions[funcId];
       if (funcData && funcData.className === objectName) {
         return funcId;
+      }
+    }
+
+    // 2. DI-aware resolution: look up objectName in caller's constructorDeps
+    //    e.g., this.callService.getById() -> constructorDeps says callService: CallService
+    //    -> resolve to CallService.getById
+    if (callerFuncId) {
+      const callerFunc = this.functions[callerFuncId];
+      if (callerFunc && callerFunc.constructorDeps) {
+        const typeName = callerFunc.constructorDeps[objectName];
+        if (typeName) {
+          // 2a. Exact type match
+          for (const funcId of candidates) {
+            const funcData = this.functions[funcId];
+            if (funcData && funcData.className === typeName) {
+              return funcId;
+            }
+          }
+
+          // 2b. Implementation class match: type is often an interface/abstract class
+          //     and the implementation has a suffix (e.g., CallService -> CallServiceV1, CallServiceImpl)
+          for (const funcId of candidates) {
+            const funcData = this.functions[funcId];
+            if (funcData && funcData.className && funcData.className.startsWith(typeName)) {
+              return funcId;
+            }
+          }
+        }
       }
     }
 
