@@ -43,8 +43,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Set
 
-# Add parent directory to path for utilities import
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utilities.context_enhancer import ContextEnhancer
 from utilities.agentic_enhancer import EntryPointDetector, ReachabilityAnalyzer
 from utilities.file_io import open_utf8, read_json, write_json, run_utf8

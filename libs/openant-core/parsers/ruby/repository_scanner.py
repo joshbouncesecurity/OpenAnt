@@ -31,8 +31,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-# Add project root to path for utilities import
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utilities.file_io import read_json, write_json, open_utf8
 
 

@@ -310,11 +310,9 @@ def _parse_javascript(repo_path: str, output_dir: str, processing_level: str, sk
     """
     print("[Parser] Running JavaScript parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "javascript" / "test_pipeline.py"
-
     # Build command — analyzer-path now defaults to co-located file in the parser
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.javascript.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,
@@ -367,10 +365,8 @@ def _parse_go(repo_path: str, output_dir: str, processing_level: str, skip_tests
     """
     print("[Parser] Running Go parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "go" / "test_pipeline.py"
-
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.go.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,
@@ -425,10 +421,8 @@ def _parse_c(repo_path: str, output_dir: str, processing_level: str, skip_tests:
     """
     print("[Parser] Running C/C++ parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "c" / "test_pipeline.py"
-
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.c.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,
@@ -484,10 +478,8 @@ def _parse_ruby(repo_path: str, output_dir: str, processing_level: str, skip_tes
     """
     print("[Parser] Running Ruby parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "ruby" / "test_pipeline.py"
-
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.ruby.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,
@@ -543,10 +535,8 @@ def _parse_php(repo_path: str, output_dir: str, processing_level: str, skip_test
     """
     print("[Parser] Running PHP parser...", file=sys.stderr)
 
-    parser_script = _CORE_ROOT / "parsers" / "php" / "test_pipeline.py"
-
     cmd = [
-        sys.executable, str(parser_script),
+        sys.executable, "-m", "parsers.php.test_pipeline",
         repo_path,
         "--output", output_dir,
         "--processing-level", processing_level,

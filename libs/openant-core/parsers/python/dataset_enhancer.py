@@ -8,14 +8,11 @@ function calls and gathering related code.
 
 import ast
 import json
-import os
 import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
-# Add project root to path for utilities import
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utilities.file_io import read_json, write_json, open_utf8
 
 
