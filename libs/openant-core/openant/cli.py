@@ -253,6 +253,7 @@ def cmd_analyze(args):
                         app_context_path=args.app_context,
                         repo_path=args.repo_path,
                         concurrency=concurrency,
+                        fresh=args.fresh,
                     )
 
                     vctx.summary = {
