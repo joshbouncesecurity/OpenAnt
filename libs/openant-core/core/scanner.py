@@ -201,10 +201,10 @@ def scan_repository(
     # Reset tracking
     tracking.reset_tracking()
 
-    # If fresh, delete all checkpoint files up front
+    # If fresh, delete all checkpoint and dataset files up front
     if fresh:
         for cp_name in ["enhance_checkpoint.json", "analyze_checkpoint.json",
-                        "verify_checkpoint.json"]:
+                        "verify_checkpoint.json", "dataset.json"]:
             cp_path = os.path.join(output_dir, cp_name)
             if os.path.exists(cp_path):
                 os.remove(cp_path)
