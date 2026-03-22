@@ -29,6 +29,7 @@ var (
 	parseDiffBase  string
 	parsePR        int
 	parseDiffScope string
+	parseFresh     bool
 )
 
 func init() {
@@ -38,6 +39,7 @@ func init() {
 	parseCmd.Flags().StringVar(&parseDiffBase, "diff-base", "", "Incremental mode: tag units overlapping diff vs this ref")
 	parseCmd.Flags().IntVar(&parsePR, "pr", 0, "Incremental mode against a GitHub PR number (mutex with --diff-base)")
 	parseCmd.Flags().StringVar(&parseDiffScope, "diff-scope", "changed_functions", "Diff scope: changed_files, changed_functions, callers")
+	parseCmd.Flags().BoolVar(&parseFresh, "fresh", false, "Delete existing dataset and reparse from scratch")
 }
 
 // buildParsePyArgs assembles the argv passed to the Python `openant parse`
@@ -114,6 +116,9 @@ func runParse(cmd *cobra.Command, args []string) {
 	}
 
 	pyArgs := buildParsePyArgs(repoPath, parseOutput, datasetName, parseLanguage, parseLevel, manifestPath)
+	if parseFresh {
+		pyArgs = append(pyArgs, "--fresh")
+	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, resolvedAPIKey())
 	if err != nil {
