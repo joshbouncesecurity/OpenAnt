@@ -260,7 +260,10 @@ def run_analysis(
     _thread_local = threading.local()
 
     def _analyze_one(unit):
-        """Process a single unit (called from worker thread)."""
+        """Process a single unit (called from worker thread).
+
+        Returns (result_dict, elapsed_seconds) tuple.
+        """
         start = time.monotonic()
         if not hasattr(_thread_local, "client"):
             _thread_local.client = AnthropicClient(model=model_id)
@@ -271,13 +274,12 @@ def run_analysis(
             json_corrector=_thread_local.corrector,
             app_context=app_context,
         )
-        result["_elapsed"] = time.monotonic() - start
-        return result
+        return (result, time.monotonic() - start)
 
-    def _on_complete(unit, result):
+    def _on_complete(unit, analyze_output):
         """Called under lock after successful analysis."""
+        result, unit_elapsed = analyze_output
         uid = unit.get("id", "unknown")
-        unit_elapsed = result.pop("_elapsed", 0.0)
         result["unit_id"] = uid
         if not result.get("finding") and result.get("verdict"):
             result["finding"] = result["verdict"].lower()

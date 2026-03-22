@@ -448,14 +448,17 @@ class ContextEnhancer:
         self._log("info", f"Processing {len(pending_units)} units (concurrency={concurrency})")
 
         def _enhance_one(unit):
-            """Process a single unit (called from worker thread)."""
+            """Process a single unit (called from worker thread).
+
+            Returns (patch_dict, elapsed_seconds) tuple.
+            """
             start = time.monotonic()
             patch = enhance_unit_with_agent(unit, index, self.tracker, verbose)
-            patch["_elapsed"] = time.monotonic() - start
-            return patch
+            return (patch, time.monotonic() - start)
 
-        def _on_complete(unit, patch):
+        def _on_complete(unit, enhance_output):
             """Called under lock after successful enhancement."""
+            patch, unit_elapsed = enhance_output
             unit_id = unit.get("id", "?")
 
             # Apply patch to unit under lock (thread-safe)
@@ -480,7 +483,7 @@ class ContextEnhancer:
             if checkpoint_path:
                 self._save_checkpoint(dataset, checkpoint_path, agentic_stats)
             if progress_callback:
-                progress_callback(unit_id, classification, patch.get("_elapsed", 0.0))
+                progress_callback(unit_id, classification, unit_elapsed)
 
         def _on_error(unit, exc):
             """Called under lock when enhancement raises."""

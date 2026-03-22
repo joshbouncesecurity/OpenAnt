@@ -191,9 +191,9 @@ def cmd_analyze(args):
     from core.step_report import step_context
 
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_analyze_")
-    concurrency = _validate_concurrency(args.concurrency)
 
     try:
+        concurrency = _validate_concurrency(args.concurrency)
         with step_context("analyze", output_dir, inputs={
             "dataset_path": os.path.abspath(args.dataset),
             "model": args.model,
@@ -285,9 +285,9 @@ def cmd_verify(args):
     from core.step_report import step_context
 
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_verify_")
-    concurrency = _validate_concurrency(args.concurrency)
 
     try:
+        concurrency = _validate_concurrency(args.concurrency)
         with step_context("verify", output_dir, inputs={
             "results_path": os.path.abspath(args.results),
             "analyzer_output_path": os.path.abspath(args.analyzer_output),
