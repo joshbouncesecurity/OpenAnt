@@ -227,6 +227,38 @@ class TypeScriptAnalyzer {
           className: className,
         };
       }
+
+      // Extract constructor DI metadata for this class
+      // In NestJS/Angular, constructor parameters with type annotations
+      // declare injected services: constructor(private callService: CallService)
+      const constructors = classDecl.getConstructors();
+      if (constructors.length > 0) {
+        const ctor = constructors[0];
+        const injections = {};  // paramName -> typeName
+
+        for (const param of ctor.getParameters()) {
+          const paramName = param.getName();
+          const typeNode = param.getTypeNode();
+          if (typeNode) {
+            const typeName = typeNode.getText();
+            // Only store simple PascalCase type names (skip union types, generics, primitives)
+            if (/^[A-Z][a-zA-Z0-9_$]*$/.test(typeName)) {
+              injections[paramName] = typeName;
+            }
+          }
+        }
+
+        if (Object.keys(injections).length > 0) {
+          // Store DI metadata on each method of this class
+          for (const method of classDecl.getMethods()) {
+            const methodName = method.getName();
+            const functionId = `${relativePath}:${className}.${methodName}`;
+            if (this.functions[functionId]) {
+              this.functions[functionId].constructorDeps = injections;
+            }
+          }
+        }
+      }
     }
 
     // Extract methods from object literals in export default
