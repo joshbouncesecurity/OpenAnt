@@ -75,7 +75,7 @@ def enhance_dataset(
                 if u.get(context_key, {}).get("error")
             )
 
-            if error_count > 0 and not skip_errors:
+            if error_count > 0 and not skip_errors and checkpoint_path:
                 # Copy completed output to checkpoint path so the existing
                 # checkpoint resume logic re-processes errored units.
                 shutil.copy2(output_path, checkpoint_path)
