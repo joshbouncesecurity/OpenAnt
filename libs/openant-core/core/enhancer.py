@@ -36,6 +36,10 @@ def enhance_dataset(
         repo_path: Path to the repository (required for agentic mode).
         mode: "agentic" (thorough, tool-use) or "single-shot" (fast, cheaper).
         checkpoint_path: Path to save/resume checkpoint (agentic mode only).
+        fresh: If True, delete existing checkpoint and reprocess all units.
+        skip_errors: If True, skip errored units instead of retrying them.
+            By default, errored units are automatically retried on re-run.
+            Only supported in agentic mode.
         model: "sonnet" (default, cost-effective).
 
     Returns:

@@ -83,6 +83,8 @@ def run_analysis(
             by the agentic enhancer (requires enhanced dataset).
         checkpoint_path: Path to save/resume checkpoint. Auto-generated if None.
         fresh: If True, delete existing checkpoint and reanalyze all units.
+        skip_errors: If True, skip errored units instead of retrying them.
+            By default, errored units are automatically retried on re-run.
 
     Returns:
         AnalyzeResult with results path, metrics, and usage.
@@ -116,7 +118,9 @@ def run_analysis(
 
             if error_count > 0 and not skip_errors:
                 # Copy completed results to checkpoint path so the resume
-                # logic re-processes errored units.
+                # logic re-processes errored units. This works because
+                # results.json and the checkpoint format share the same
+                # top-level keys ("results", "code_by_route").
                 shutil.copy2(results_path, checkpoint_path)
                 print(f"[Analyze] Retrying {error_count} errored units from: {results_path}", file=sys.stderr)
             else:
@@ -197,7 +201,8 @@ def run_analysis(
             results = cp.get("results", [])
             code_by_route = cp.get("code_by_route", {})
             if not skip_errors:
-                # Filter out errored results so they get reprocessed
+                # Filter out errored results so they get reprocessed.
+                # This zeroes their counts; they'll be recounted after reprocessing.
                 results = [r for r in results if r.get("verdict") != "ERROR"]
             completed_ids = {r["unit_id"] for r in results}
             # Recount from checkpoint

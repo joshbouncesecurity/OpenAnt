@@ -45,7 +45,7 @@ func init() {
 	analyzeCmd.Flags().IntVar(&analyzeLimit, "limit", 0, "Max units to analyze (0 = no limit)")
 	analyzeCmd.Flags().StringVar(&analyzeModel, "model", "opus", "Model: opus or sonnet")
 	analyzeCmd.Flags().BoolVar(&analyzeFresh, "fresh", false, "Ignore checkpoint and reanalyze all units from scratch")
-	analyzeCmd.Flags().BoolVar(&analyzeSkipErrors, "skip-errors", false, "Skip errored units instead of retrying them")
+	analyzeCmd.Flags().BoolVar(&analyzeSkipErrors, "skip-errors", false, "Skip errored units instead of retrying them (errors are retried by default)")
 }
 
 func runAnalyze(cmd *cobra.Command, args []string) {
