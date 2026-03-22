@@ -416,6 +416,9 @@ if (require.main === module) {
                 console.error(`  Existing units: ${existingUnits.length}`);
                 console.error(`  New units to add: ${newUnits.length}`);
                 console.error(`  Duplicates skipped: ${duplicateCount}`);
+                if (duplicateCount > 0) {
+                    console.error(`  Note: ${duplicateCount} existing units kept as-is (use --fresh to regenerate all units)`);
+                }
 
                 // Append new units to existing
                 finalResult = {

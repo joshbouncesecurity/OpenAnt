@@ -112,6 +112,7 @@ def cmd_parse(args):
                 processing_level=args.level,
                 skip_tests=not args.no_skip_tests,
                 name=getattr(args, "name", None),
+                fresh=getattr(args, "fresh", False),
             )
 
             ctx.summary = {
@@ -565,6 +566,8 @@ def main():
     )
     parse_p.add_argument("--no-skip-tests", action="store_true", help="Include test files in parsing (default: tests are skipped)")
     parse_p.add_argument("--name", help="Dataset name (default: derived from repo path)")
+    parse_p.add_argument("--fresh", action="store_true",
+                         help="Delete existing dataset and reparse from scratch (default: reuse existing units)")
     parse_p.set_defaults(func=cmd_parse)
 
     # ---------------------------------------------------------------
