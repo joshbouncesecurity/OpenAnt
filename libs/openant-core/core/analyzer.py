@@ -43,6 +43,30 @@ except ImportError:
     load_context = None
 
 
+def _recount_metrics(results: list) -> AnalysisMetrics:
+    """Recount verdict metrics from the results list.
+
+    This is more reliable than trusting saved metrics, since older runs
+    may have missed certain verdict types (e.g. insufficient_context).
+    """
+    counts = {
+        "vulnerable": 0,
+        "bypassable": 0,
+        "inconclusive": 0,
+        "insufficient_context": 0,
+        "protected": 0,
+        "safe": 0,
+        "errors": 0,
+    }
+    for r in results:
+        finding = r.get("finding", r.get("verdict", "error").lower())
+        if finding in counts:
+            counts[finding] += 1
+        elif r.get("verdict") == "ERROR":
+            counts["errors"] += 1
+    return AnalysisMetrics(total=len(results), **counts)
+
+
 def _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id):
     """Save analyze checkpoint using atomic writes."""
     atomic_write_json(checkpoint_path, {
@@ -131,16 +155,7 @@ def run_analysis(
                 print(f"[Analyze] Already complete: {results_path}", file=sys.stderr)
                 print("[Analyze] Use --fresh to reanalyze all units from scratch.", file=sys.stderr)
 
-                metrics_data = experiment.get("metrics", {})
-                metrics = AnalysisMetrics(
-                    total=metrics_data.get("total", 0),
-                    vulnerable=metrics_data.get("vulnerable", 0),
-                    bypassable=metrics_data.get("bypassable", 0),
-                    inconclusive=metrics_data.get("inconclusive", 0),
-                    protected=metrics_data.get("protected", 0),
-                    safe=metrics_data.get("safe", 0),
-                    errors=metrics_data.get("errors", 0),
-                )
+                metrics = _recount_metrics(experiment.get("results", []))
 
                 return AnalyzeResult(
                     results_path=results_path,
@@ -192,6 +207,7 @@ def run_analysis(
         "vulnerable": 0,
         "bypassable": 0,
         "inconclusive": 0,
+        "insufficient_context": 0,
         "protected": 0,
         "safe": 0,
         "errors": 0,
@@ -368,6 +384,7 @@ def run_analysis(
         vulnerable=counts["vulnerable"],
         bypassable=counts["bypassable"],
         inconclusive=counts["inconclusive"],
+        insufficient_context=counts["insufficient_context"],
         protected=counts["protected"],
         safe=counts["safe"],
         errors=counts["errors"],
