@@ -7,13 +7,7 @@ Run BEFORE any expensive LLM operations.
 """
 
 import json
-import os
 import sys
-
-# Ensure project root is on sys.path for utilities imports
-_PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
-if _PROJECT_ROOT not in sys.path:
-    sys.path.insert(0, _PROJECT_ROOT)
 
 from utilities.file_io import read_json
 
