@@ -43,7 +43,7 @@ def _run_claude_cli(prompt: str, model: str, system: str = None) -> dict:
         full_prompt = f"{system}\n\n{prompt}"
 
     cmd = [
-        claude_bin, "-p", full_prompt,
+        claude_bin, "-p",
         "--model", model,
         "--max-turns", "1",
         "--output-format", "json",
@@ -54,6 +54,7 @@ def _run_claude_cli(prompt: str, model: str, system: str = None) -> dict:
 
     result = run_utf8(
         cmd,
+        input=full_prompt,
         capture_output=True,
         text=True,
         timeout=300,

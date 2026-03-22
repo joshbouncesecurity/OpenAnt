@@ -133,7 +133,7 @@ class TestIsEnabled:
 # ---------------------------------------------------------------------------
 
 class TestRunClaudeCli:
-    @patch("utilities.local_claude.subprocess.run")
+    @patch("utilities.local_claude.run_utf8")
     @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
     def test_parses_json_output_with_usage(self, mock_which, mock_run):
         mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT)
@@ -145,7 +145,45 @@ class TestRunClaudeCli:
         assert result["output_tokens"] == 25
         assert result["cost_usd"] == 0.003
 
-    @patch("utilities.local_claude.subprocess.run")
+    @patch("utilities.local_claude.run_utf8")
+    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
+    def test_passes_prompt_via_stdin(self, mock_which, mock_run):
+        """Prompt must be passed via stdin, not as a CLI arg (WinError 206 fix)."""
+        mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT)
+
+        _run_claude_cli("my prompt text", model="m")
+
+        cmd = mock_run.call_args[0][0]
+        # -p flag should be present but prompt text should NOT be in the command
+        assert "-p" in cmd
+        assert "my prompt text" not in cmd
+        # Prompt should be passed via input kwarg (stdin)
+        assert mock_run.call_args[1]["input"] == "my prompt text"
+
+    @patch("utilities.local_claude.run_utf8")
+    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
+    def test_stdin_prompt_with_system(self, mock_which, mock_run):
+        """System prompt is prepended and passed via stdin together."""
+        mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT)
+
+        _run_claude_cli("user prompt", model="m", system="system instructions")
+
+        assert mock_run.call_args[1]["input"] == "system instructions\n\nuser prompt"
+
+    @patch("utilities.local_claude.run_utf8")
+    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
+    def test_large_prompt_via_stdin(self, mock_which, mock_run):
+        """Prompts exceeding Windows cmd limit work via stdin."""
+        mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT)
+        large_prompt = "x" * 10000  # Exceeds Windows 8191 char limit
+
+        _run_claude_cli(large_prompt, model="m")
+
+        cmd = mock_run.call_args[0][0]
+        assert large_prompt not in cmd
+        assert mock_run.call_args[1]["input"] == large_prompt
+
+    @patch("utilities.local_claude.run_utf8")
     @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
     def test_strips_claudecode_from_env(self, mock_which, mock_run):
         """Prevents 'nested session' error when run from within Claude Code."""
@@ -163,7 +201,7 @@ class TestRunClaudeCli:
         with pytest.raises(FileNotFoundError, match="claude CLI not found"):
             _run_claude_cli("test", model="m")
 
-    @patch("utilities.local_claude.subprocess.run")
+    @patch("utilities.local_claude.run_utf8")
     @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
     def test_raises_on_nonzero_exit(self, mock_which, mock_run):
         mock_run.return_value = _make_completed_process(returncode=1, stderr="auth failed")
@@ -171,7 +209,7 @@ class TestRunClaudeCli:
         with pytest.raises(RuntimeError, match="exit 1"):
             _run_claude_cli("test", model="m")
 
-    @patch("utilities.local_claude.subprocess.run")
+    @patch("utilities.local_claude.run_utf8")
     @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
     def test_handles_non_json_output(self, mock_which, mock_run):
         mock_run.return_value = _make_completed_process(stdout="plain text response")
@@ -181,7 +219,7 @@ class TestRunClaudeCli:
         assert result["text"] == "plain text response"
         assert result["input_tokens"] == 0
 
-    @patch("utilities.local_claude.subprocess.run")
+    @patch("utilities.local_claude.run_utf8")
     @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
     def test_falls_back_to_stdout_when_result_empty(self, mock_which, mock_run):
         mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT_NO_RESULT)
