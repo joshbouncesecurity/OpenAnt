@@ -473,6 +473,7 @@ class FindingVerifier:
 
         def _verify_one(result):
             """Verify a single finding (called from worker thread)."""
+            start = time.monotonic()
             route_key = result.get("route_key", "unknown")
             stage1_finding = result.get("finding", "inconclusive")
             code = code_by_route.get(route_key, "")
@@ -483,10 +484,11 @@ class FindingVerifier:
                 reasoning=result.get("reasoning", ""),
                 files_included=result.get("files_included", [])
             )
-            return verification
+            return (verification, time.monotonic() - start)
 
-        def _on_complete(result, verification):
+        def _on_complete(result, verify_output):
             """Called under lock after successful verification."""
+            verification, unit_elapsed = verify_output
             route_key = result.get("route_key", "unknown")
             stage1_finding = result.get("finding", "inconclusive")
 
@@ -509,7 +511,7 @@ class FindingVerifier:
                 completed_keys.add(route_key)
                 _save_verify_checkpoint(checkpoint_path, results, completed_keys)
             if progress_callback:
-                progress_callback(route_key, detail, 0.0)
+                progress_callback(route_key, detail, unit_elapsed)
 
         def _on_error(result, exc):
             """Called under lock when verification raises."""
@@ -517,6 +519,9 @@ class FindingVerifier:
             self._log("error", f"Verification failed", unit_id=route_key, error=str(exc))
             # Do NOT add to completed_keys — errored findings will be
             # retried on resume (matching analyze/enhance behavior).
+            # We intentionally skip checkpoint save here: the last successful
+            # _on_complete already persisted all completed work. If the process
+            # dies after this error, the errored finding is simply reprocessed.
             if progress_callback:
                 progress_callback(route_key, "error", 0.0)
 

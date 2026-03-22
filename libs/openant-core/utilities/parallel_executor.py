@@ -99,7 +99,7 @@ def _run_threaded(items, process_fn, concurrency, on_complete, on_error):
                 with lock:
                     if on_complete:
                         on_complete(item, result)
-                results.append((item, result))
+                    results.append((item, result))
 
         except KeyboardInterrupt:
             # Cancel queued (not-yet-started) futures; don't wait for

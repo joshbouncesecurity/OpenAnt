@@ -190,6 +190,7 @@ def run_analysis(
         "vulnerable": 0,
         "bypassable": 0,
         "inconclusive": 0,
+        "insufficient_context": 0,
         "protected": 0,
         "safe": 0,
         "errors": 0,
@@ -237,17 +238,26 @@ def run_analysis(
             continue
         pending_units.append(unit)
 
+    # Per-thread client/corrector to avoid last_call race on shared AnthropicClient.
+    # Using threading.local() so each thread creates once and reuses.
+    import threading as _threading
+    import time as _time
+    _thread_local = _threading.local()
+
     def _analyze_one(unit):
         """Process a single unit (called from worker thread)."""
-        # Per-thread client to avoid last_call race on shared AnthropicClient
-        thread_client = AnthropicClient(model=model_id)
-        thread_corrector = JSONCorrector(thread_client)
-        return analyze_unit(
-            thread_client, unit,
+        start = _time.monotonic()
+        if not hasattr(_thread_local, "client"):
+            _thread_local.client = AnthropicClient(model=model_id)
+            _thread_local.corrector = JSONCorrector(_thread_local.client)
+        result = analyze_unit(
+            _thread_local.client, unit,
             use_multifile=True,
-            json_corrector=thread_corrector,
+            json_corrector=_thread_local.corrector,
             app_context=app_context,
         )
+        result["_elapsed"] = _time.monotonic() - start
+        return result
 
     def _on_complete(unit, result):
         """Called under lock after successful analysis."""
@@ -273,7 +283,7 @@ def run_analysis(
 
         if checkpoint_path:
             _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id)
-        progress.report(unit_label=uid, detail=finding)
+        progress.report(unit_label=uid, detail=finding, unit_elapsed=result.get("_elapsed", 0.0))
 
     def _on_error(unit, exc):
         """Called under lock when analysis raises."""
@@ -358,6 +368,7 @@ def run_analysis(
         vulnerable=counts["vulnerable"],
         bypassable=counts["bypassable"],
         inconclusive=counts["inconclusive"],
+        insufficient_context=counts["insufficient_context"],
         protected=counts["protected"],
         safe=counts["safe"],
         errors=counts["errors"],

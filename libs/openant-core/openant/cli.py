@@ -144,13 +144,13 @@ def cmd_enhance(args):
     output_dir = os.path.dirname(os.path.abspath(output_path))
 
     try:
+        concurrency = _validate_concurrency(args.concurrency)
         with step_context("enhance", output_dir, inputs={
             "dataset_path": os.path.abspath(args.dataset),
             "analyzer_output_path": os.path.abspath(args.analyzer_output) if args.analyzer_output else None,
             "repo_path": os.path.abspath(args.repo_path) if args.repo_path else None,
             "mode": args.mode,
         }) as ctx:
-            concurrency = _validate_concurrency(args.concurrency)
             result = enhance_dataset(
                 dataset_path=args.dataset,
                 output_path=output_path,
@@ -191,6 +191,7 @@ def cmd_analyze(args):
     from core.step_report import step_context
 
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_analyze_")
+    concurrency = _validate_concurrency(args.concurrency)
 
     try:
         with step_context("analyze", output_dir, inputs={
@@ -199,7 +200,6 @@ def cmd_analyze(args):
             "exploitable_only": args.exploitable_only,
             "limit": args.limit,
         }) as ctx:
-            concurrency = _validate_concurrency(args.concurrency)
             result = run_analysis(
                 dataset_path=args.dataset,
                 output_dir=output_dir,
@@ -285,6 +285,7 @@ def cmd_verify(args):
     from core.step_report import step_context
 
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_verify_")
+    concurrency = _validate_concurrency(args.concurrency)
 
     try:
         with step_context("verify", output_dir, inputs={
@@ -293,7 +294,6 @@ def cmd_verify(args):
             "app_context_path": os.path.abspath(args.app_context) if args.app_context else None,
             "repo_path": os.path.abspath(args.repo_path) if args.repo_path else None,
         }) as ctx:
-            concurrency = _validate_concurrency(args.concurrency)
             result = run_verification(
                 results_path=args.results,
                 output_dir=output_dir,

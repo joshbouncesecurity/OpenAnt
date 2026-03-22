@@ -44,6 +44,11 @@ func init() {
 }
 
 func runEnhance(cmd *cobra.Command, args []string) {
+	if enhanceConcurrency < 1 {
+		fmt.Fprintln(os.Stderr, "Error: --concurrency must be >= 1")
+		os.Exit(1)
+	}
+
 	datasetPath, ctx, err := resolveFileArg(args, "dataset.json")
 	if err != nil {
 		output.PrintError(err.Error())
@@ -88,9 +93,7 @@ func runEnhance(cmd *cobra.Command, args []string) {
 	if enhanceSkipErrors {
 		pyArgs = append(pyArgs, "--skip-errors")
 	}
-	if enhanceConcurrency != 4 {
-		pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", enhanceConcurrency))
-	}
+	pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", enhanceConcurrency))
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())
 	if err != nil {

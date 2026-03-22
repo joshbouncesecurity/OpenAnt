@@ -59,6 +59,11 @@ func init() {
 }
 
 func runScan(cmd *cobra.Command, args []string) {
+	if scanConcurrency < 1 {
+		fmt.Fprintln(os.Stderr, "Error: --concurrency must be >= 1")
+		os.Exit(1)
+	}
+
 	repoPath, ctx, err := resolveRepoArg(args)
 	if err != nil {
 		output.PrintError(err.Error())
@@ -122,9 +127,7 @@ func runScan(cmd *cobra.Command, args []string) {
 	if scanFresh {
 		pyArgs = append(pyArgs, "--fresh")
 	}
-	if scanConcurrency != 4 {
-		pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", scanConcurrency))
-	}
+	pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", scanConcurrency))
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())
 	if err != nil {

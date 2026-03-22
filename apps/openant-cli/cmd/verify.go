@@ -44,6 +44,11 @@ func init() {
 }
 
 func runVerify(cmd *cobra.Command, args []string) {
+	if verifyConcurrency < 1 {
+		fmt.Fprintln(os.Stderr, "Error: --concurrency must be >= 1")
+		os.Exit(1)
+	}
+
 	resultsPath, ctx, err := resolveFileArg(args, "results.json")
 	if err != nil {
 		output.PrintError(err.Error())
@@ -86,9 +91,7 @@ func runVerify(cmd *cobra.Command, args []string) {
 	if verifyFresh {
 		pyArgs = append(pyArgs, "--fresh")
 	}
-	if verifyConcurrency != 4 {
-		pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", verifyConcurrency))
-	}
+	pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", verifyConcurrency))
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())
 	if err != nil {
