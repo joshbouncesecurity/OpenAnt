@@ -343,6 +343,7 @@ class ContextEnhancer:
         verbose: bool = False,
         checkpoint_path: str = None,
         progress_callback: Optional[Callable] = None,
+        skip_errors: bool = False,
     ) -> dict:
         """
         Enhance all units using agentic approach with tool use.
@@ -362,6 +363,7 @@ class ContextEnhancer:
             checkpoint_path: Path to save/load checkpoint file (enables resume)
             progress_callback: Optional callback(unit_id, classification, unit_elapsed)
                 called after each unit completes.
+            skip_errors: If True, skip errored units on resume instead of retrying them.
 
         Returns:
             Enhanced dataset with agent_context field
@@ -380,8 +382,10 @@ class ContextEnhancer:
 
                 # Build set of already-processed unit IDs
                 for cp_unit in checkpoint_data.get("units", []):
-                    if cp_unit.get("agent_context") and not cp_unit["agent_context"].get("error"):
-                        processed_ids.add(cp_unit.get("id"))
+                    if cp_unit.get("agent_context"):
+                        has_error = cp_unit["agent_context"].get("error")
+                        if not has_error or skip_errors:
+                            processed_ids.add(cp_unit.get("id"))
 
                 # Restore units from checkpoint
                 cp_units_by_id = {u.get("id"): u for u in checkpoint_data.get("units", [])}

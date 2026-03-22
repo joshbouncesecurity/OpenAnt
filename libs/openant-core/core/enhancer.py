@@ -125,8 +125,10 @@ def enhance_dataset(
         try:
             cp_data = read_json(checkpoint_path)
             for cp_unit in cp_data.get("units", []):
-                if cp_unit.get("agent_context") and not cp_unit["agent_context"].get("error"):
-                    resumed_count += 1
+                if cp_unit.get("agent_context"):
+                    has_error = cp_unit["agent_context"].get("error")
+                    if not has_error or skip_errors:
+                        resumed_count += 1
         except (json.JSONDecodeError, OSError):
             pass
 
@@ -151,6 +153,7 @@ def enhance_dataset(
             repo_path=repo_path,
             checkpoint_path=checkpoint_path,
             progress_callback=_on_unit_done,
+            skip_errors=skip_errors,
         )
     elif mode == "single-shot":
         enhanced = enhancer.enhance_dataset(
