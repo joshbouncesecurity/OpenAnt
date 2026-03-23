@@ -169,8 +169,9 @@ def run_verification(
     verifier = FindingVerifier(
         index=index,
         tracker=tracker,
-        verbose=False,
+        verbose=os.getenv("OPENANT_VERBOSE", "").lower() == "true",
         app_context=app_context,
+        output_dir=output_dir,
     )
 
     print(f"[Verify] Running Stage 2 attacker simulation on {findings_input} findings...",
@@ -246,6 +247,10 @@ def run_verification(
     _write_verified_results(verified_path, experiment, merged_results, verified_results)
 
     print(f"[Verify] Verified results written to {verified_path}", file=sys.stderr)
+
+    explanations_dir = os.path.join(output_dir, "verify_explanations")
+    if os.path.isdir(explanations_dir):
+        print(f"[Verify] Explanations written to {explanations_dir}", file=sys.stderr)
 
     return VerifyResult(
         verified_results_path=verified_path,

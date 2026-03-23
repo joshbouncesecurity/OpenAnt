@@ -158,7 +158,16 @@ def _mock_enhance_unit_fail_after(n):
     return _mock
 
 
-@patch("utilities.llm_client.create_anthropic_client")
+def _mock_run_query_sync_return():
+    """Build a mock return value for _run_query_sync: (result_message, text)."""
+    mock_msg = MagicMock()
+    mock_msg.result = "mock result"
+    mock_msg.usage = {"input_tokens": 0, "output_tokens": 0}
+    mock_msg.total_cost_usd = 0.0
+    return (mock_msg, "text")
+
+
+@patch("utilities.llm_client._run_query_sync", return_value=_mock_run_query_sync_return())
 class TestEnhanceAutoCheckpoint:
     @patch("utilities.context_enhancer.enhance_unit_with_agent", side_effect=_mock_enhance_unit)
     @patch("utilities.context_enhancer.load_index_from_file")

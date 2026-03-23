@@ -622,10 +622,13 @@ class TestVerifyBatchCheckpoint:
         code_by_route = {"route_0": "code0", "route_1": "code1"}
 
         # Create a mock verifier with the real verify_batch method
-        verifier = MagicMock(spec=FindingVerifier)
+        verifier = MagicMock()
         verifier.verify_result = MagicMock(return_value=MockVerificationResult())
         verifier._check_consistency = lambda r, c: r
         verifier._log = lambda *a, **kw: None
+        verifier.verbose = False
+        verifier.output_dir = None
+        verifier.tracker = MagicMock(get_totals=lambda: {"total_cost_usd": 0.0})
 
         # Call the unbound method
         FindingVerifier.verify_batch(
@@ -663,10 +666,13 @@ class TestVerifyBatchCheckpoint:
             consistency_called_with["code_by_route"] = c
             return r
 
-        verifier = MagicMock(spec=FindingVerifier)
+        verifier = MagicMock()
         verifier.verify_result = MagicMock(return_value=MockVerificationResult())
         verifier._check_consistency = mock_consistency
         verifier._log = lambda *a, **kw: None
+        verifier.verbose = False
+        verifier.output_dir = None
+        verifier.tracker = MagicMock(get_totals=lambda: {"total_cost_usd": 0.0})
 
         FindingVerifier.verify_batch(
             verifier, results, code_by_route,

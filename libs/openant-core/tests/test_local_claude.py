@@ -1,602 +1,430 @@
-"""Tests for local Claude Code mode."""
+"""Tests for SDK-backed LLM client."""
 import json
 import os
+from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
 
-from utilities.local_claude import (
-    is_enabled,
-    _run_claude_cli,
-    _Response,
-    _Messages,
-    LocalClaudeClient,
-    _build_tool_system_prompt,
-    _serialize_messages,
-    _parse_tool_calls,
-)
 from utilities.llm_client import (
+    _build_env,
+    _build_options,
+    _run_query_sync,
+    run_native_verification,
     AnthropicClient,
     TokenTracker,
-    create_anthropic_client,
 )
 
 
-# --- Sample CLI JSON output matching real `claude -p --output-format json` ---
+# ---------------------------------------------------------------------------
+# Helpers to build mock SDK messages
+# ---------------------------------------------------------------------------
 
-SAMPLE_CLI_OUTPUT = json.dumps({
-    "type": "result",
-    "subtype": "success",
-    "is_error": False,
-    "result": "The answer is 42.",
-    "duration_ms": 1500,
-    "num_turns": 1,
-    "stop_reason": "end_turn",
-    "total_cost_usd": 0.003,
-    "usage": {
-        "input_tokens": 150,
-        "output_tokens": 25,
-        "cache_creation_input_tokens": 0,
-        "cache_read_input_tokens": 0,
-    },
-})
-
-SAMPLE_CLI_OUTPUT_NO_RESULT = json.dumps({
-    "type": "result",
-    "subtype": "success",
-    "result": "",
-    "total_cost_usd": 0.0,
-    "usage": {"input_tokens": 0, "output_tokens": 0},
-})
-
-# --- Sample tool definitions for testing ---
-
-SAMPLE_TOOLS = [
-    {
-        "name": "search_usages",
-        "description": "Search for function usages.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "function_name": {
-                    "type": "string",
-                    "description": "Name of the function"
-                }
-            },
-            "required": ["function_name"]
-        }
-    },
-    {
-        "name": "finish",
-        "description": "Complete the analysis.",
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "confidence": {
-                    "type": "number",
-                    "description": "Confidence level"
-                }
-            },
-            "required": ["confidence"]
-        }
-    },
-]
-
-
-def _make_completed_process(stdout="", stderr="", returncode=0):
-    proc = MagicMock()
-    proc.stdout = stdout
-    proc.stderr = stderr
-    proc.returncode = returncode
-    return proc
-
-
-def _make_cli_output(text, input_tokens=100, output_tokens=50):
-    """Helper to create CLI JSON output with custom text."""
-    return json.dumps({
-        "type": "result",
-        "subtype": "success",
-        "result": text,
-        "total_cost_usd": 0.001,
-        "usage": {
-            "input_tokens": input_tokens,
-            "output_tokens": output_tokens,
-        },
-    })
+def _make_result_message(
+    result="The answer is 42.",
+    input_tokens=150,
+    output_tokens=25,
+    cost=0.003,
+    structured_output=None,
+):
+    """Create a mock ResultMessage matching the SDK's interface."""
+    msg = MagicMock()
+    msg.result = result
+    msg.usage = {"input_tokens": input_tokens, "output_tokens": output_tokens}
+    msg.total_cost_usd = cost
+    msg.structured_output = structured_output
+    return msg
 
 
 # ---------------------------------------------------------------------------
-# is_enabled()
+# _build_env()
 # ---------------------------------------------------------------------------
 
-class TestIsEnabled:
-    def test_true_when_set(self):
-        with patch.dict(os.environ, {"OPENANT_LOCAL_CLAUDE": "true"}):
-            assert is_enabled() is True
+class TestBuildEnv:
+    def test_includes_api_key_when_set(self):
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test", "OPENANT_LOCAL_CLAUDE": ""}, clear=False):
+            env = _build_env()
+            assert env["ANTHROPIC_API_KEY"] == "sk-test"
 
-    def test_true_case_insensitive(self):
-        with patch.dict(os.environ, {"OPENANT_LOCAL_CLAUDE": "TRUE"}):
-            assert is_enabled() is True
+    def test_no_api_key_in_local_mode(self):
+        """Local mode should not pass API key even if set."""
+        with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "sk-test", "OPENANT_LOCAL_CLAUDE": "true"}, clear=False):
+            env = _build_env()
+            assert "ANTHROPIC_API_KEY" not in env
 
-    def test_false_when_not_set(self):
-        with patch.dict(os.environ, {}, clear=True):
-            assert is_enabled() is False
+    def test_no_api_key_when_not_set(self):
+        env_without_key = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
+        with patch.dict(os.environ, env_without_key, clear=True):
+            env = _build_env()
+            assert "ANTHROPIC_API_KEY" not in env
 
-    def test_false_for_other_values(self):
-        for val in ("false", "1", "yes", ""):
-            with patch.dict(os.environ, {"OPENANT_LOCAL_CLAUDE": val}):
-                assert is_enabled() is False, f"Expected False for {val!r}"
+    def test_includes_config_dir_when_set(self):
+        with patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": "/home/.claude-k"}, clear=False):
+            env = _build_env()
+            assert env["CLAUDE_CONFIG_DIR"] == "/home/.claude-k"
 
-
-# ---------------------------------------------------------------------------
-# _run_claude_cli()
-# ---------------------------------------------------------------------------
-
-class TestRunClaudeCli:
-    @patch("utilities.local_claude.run_utf8")
-    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
-    def test_parses_json_output_with_usage(self, mock_which, mock_run):
-        mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT)
-
-        result = _run_claude_cli("What is 6*7?", model="claude-sonnet-4-20250514")
-
-        assert result["text"] == "The answer is 42."
-        assert result["input_tokens"] == 150
-        assert result["output_tokens"] == 25
-        assert result["cost_usd"] == 0.003
-
-    @patch("utilities.local_claude.run_utf8")
-    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
-    def test_passes_prompt_via_stdin(self, mock_which, mock_run):
-        """Prompt must be passed via stdin, not as a CLI arg (WinError 206 fix)."""
-        mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT)
-
-        _run_claude_cli("my prompt text", model="m")
-
-        cmd = mock_run.call_args[0][0]
-        # -p flag should be present but prompt text should NOT be in the command
-        assert "-p" in cmd
-        assert "my prompt text" not in cmd
-        # Prompt should be passed via input kwarg (stdin)
-        assert mock_run.call_args[1]["input"] == "my prompt text"
-
-    @patch("utilities.local_claude.run_utf8")
-    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
-    def test_stdin_prompt_with_system(self, mock_which, mock_run):
-        """System prompt is prepended and passed via stdin together."""
-        mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT)
-
-        _run_claude_cli("user prompt", model="m", system="system instructions")
-
-        assert mock_run.call_args[1]["input"] == "system instructions\n\nuser prompt"
-
-    @patch("utilities.local_claude.run_utf8")
-    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
-    def test_large_prompt_via_stdin(self, mock_which, mock_run):
-        """Prompts exceeding Windows cmd limit work via stdin."""
-        mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT)
-        large_prompt = "x" * 10000  # Exceeds Windows 8191 char limit
-
-        _run_claude_cli(large_prompt, model="m")
-
-        cmd = mock_run.call_args[0][0]
-        assert large_prompt not in cmd
-        assert mock_run.call_args[1]["input"] == large_prompt
-
-    @patch("utilities.local_claude.run_utf8")
-    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
-    def test_strips_claudecode_from_env(self, mock_which, mock_run):
-        """Prevents 'nested session' error when run from within Claude Code."""
-        mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT)
-
-        with patch.dict(os.environ, {"CLAUDECODE": "1", "PATH": "/usr/bin"}):
-            _run_claude_cli("test", model="m")
-
-        env = mock_run.call_args[1]["env"]
-        assert "CLAUDECODE" not in env
-        assert "PATH" in env
-
-    @patch("utilities.local_claude.shutil.which", return_value=None)
-    def test_raises_when_claude_not_found(self, mock_which):
-        with pytest.raises(FileNotFoundError, match="claude CLI not found"):
-            _run_claude_cli("test", model="m")
-
-    @patch("utilities.local_claude.run_utf8")
-    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
-    def test_raises_on_nonzero_exit(self, mock_which, mock_run):
-        mock_run.return_value = _make_completed_process(returncode=1, stderr="auth failed")
-
-        with pytest.raises(RuntimeError, match="exit 1"):
-            _run_claude_cli("test", model="m")
-
-    @patch("utilities.local_claude.run_utf8")
-    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
-    def test_handles_non_json_output(self, mock_which, mock_run):
-        mock_run.return_value = _make_completed_process(stdout="plain text response")
-
-        result = _run_claude_cli("test", model="m")
-
-        assert result["text"] == "plain text response"
-        assert result["input_tokens"] == 0
-
-    @patch("utilities.local_claude.run_utf8")
-    @patch("utilities.local_claude.shutil.which", return_value="/usr/bin/claude")
-    def test_falls_back_to_stdout_when_result_empty(self, mock_which, mock_run):
-        mock_run.return_value = _make_completed_process(stdout=SAMPLE_CLI_OUTPUT_NO_RESULT)
-
-        result = _run_claude_cli("test", model="m")
-
-        # When "result" is empty string, falls back to raw stdout
-        assert result["text"] == SAMPLE_CLI_OUTPUT_NO_RESULT
+    def test_clears_claudecode(self):
+        with patch.dict(os.environ, {"CLAUDECODE": "1"}, clear=False):
+            env = _build_env()
+            assert env["CLAUDECODE"] == ""
 
 
 # ---------------------------------------------------------------------------
-# _parse_tool_calls()
+# _build_options()
 # ---------------------------------------------------------------------------
 
-class TestParseToolCalls:
-    def test_single_tool_call(self):
-        text = 'Some reasoning\n<tool_call>{"name": "search_usages", "input": {"function_name": "foo"}}</tool_call>'
-        blocks, remaining = _parse_tool_calls(text)
+class TestBuildOptions:
+    def test_sets_model(self):
+        opts = _build_options("claude-opus-4-6")
+        assert opts.model == "claude-opus-4-6"
 
-        assert len(blocks) == 1
-        assert blocks[0].type == "tool_use"
-        assert blocks[0].name == "search_usages"
-        assert blocks[0].input == {"function_name": "foo"}
-        assert blocks[0].id.startswith("toolu_")
-        assert remaining == "Some reasoning"
+    def test_sets_system_prompt(self):
+        opts = _build_options("m", system="You are a security analyst.")
+        assert opts.system_prompt == "You are a security analyst."
 
-    def test_multiple_tool_calls(self):
-        text = (
-            '<tool_call>{"name": "search_usages", "input": {"function_name": "a"}}</tool_call>\n'
-            '<tool_call>{"name": "read_function", "input": {"function_id": "b"}}</tool_call>'
+    def test_sets_max_turns(self):
+        opts = _build_options("m", max_turns=5)
+        assert opts.max_turns == 5
+
+    def test_sets_allowed_tools(self):
+        opts = _build_options("m", allowed_tools=["Read", "Grep"])
+        assert opts.allowed_tools == ["Read", "Grep"]
+
+    def test_default_allowed_tools_empty(self):
+        opts = _build_options("m")
+        assert opts.allowed_tools == []
+
+    def test_sets_permission_mode(self):
+        opts = _build_options("m")
+        assert opts.permission_mode == "bypassPermissions"
+
+    def test_passes_extra_kwargs(self):
+        opts = _build_options("m", add_dirs=["/tmp/repo"], max_budget_usd=1.0)
+        assert opts.add_dirs == ["/tmp/repo"]
+        assert opts.max_budget_usd == 1.0
+
+
+# ---------------------------------------------------------------------------
+# AnthropicClient — token tracking
+# ---------------------------------------------------------------------------
+
+class TestAnthropicClientTokenTracking:
+    @patch("utilities.llm_client._run_query_sync")
+    def test_tracks_tokens(self, mock_query):
+        mock_query.return_value = (
+            _make_result_message(result="ok", input_tokens=200, output_tokens=100, cost=0.01),
+            "ok",
         )
-        blocks, remaining = _parse_tool_calls(text)
-
-        assert len(blocks) == 2
-        assert blocks[0].name == "search_usages"
-        assert blocks[1].name == "read_function"
-        # Each gets a unique ID
-        assert blocks[0].id != blocks[1].id
-
-    def test_no_tool_calls(self):
-        text = "Just some plain text with no tools."
-        blocks, remaining = _parse_tool_calls(text)
-
-        assert len(blocks) == 0
-        assert remaining == text
-
-    def test_malformed_json_skipped(self, capsys):
-        text = '<tool_call>not valid json</tool_call>\n<tool_call>{"name": "finish", "input": {}}</tool_call>'
-        blocks, remaining = _parse_tool_calls(text)
-
-        assert len(blocks) == 1
-        assert blocks[0].name == "finish"
-        # Warning printed to stderr
-        captured = capsys.readouterr()
-        assert "malformed tool_call" in captured.err
-
-    def test_multiline_tool_call(self):
-        text = '<tool_call>\n{\n  "name": "finish",\n  "input": {"confidence": 0.9}\n}\n</tool_call>'
-        blocks, remaining = _parse_tool_calls(text)
-
-        assert len(blocks) == 1
-        assert blocks[0].name == "finish"
-        assert blocks[0].input == {"confidence": 0.9}
-
-
-# ---------------------------------------------------------------------------
-# _build_tool_system_prompt()
-# ---------------------------------------------------------------------------
-
-class TestBuildToolSystemPrompt:
-    def test_includes_original_system(self):
-        result = _build_tool_system_prompt(SAMPLE_TOOLS, "You are a security analyst.")
-        assert "You are a security analyst." in result
-
-    def test_includes_tool_names(self):
-        result = _build_tool_system_prompt(SAMPLE_TOOLS)
-        assert "search_usages" in result
-        assert "finish" in result
-
-    def test_includes_format_instructions(self):
-        result = _build_tool_system_prompt(SAMPLE_TOOLS)
-        assert "<tool_call>" in result
-        assert "tool_name" in result
-
-    def test_includes_parameter_details(self):
-        result = _build_tool_system_prompt(SAMPLE_TOOLS)
-        assert "function_name" in result
-        assert "(required)" in result
-
-    def test_no_original_system(self):
-        result = _build_tool_system_prompt(SAMPLE_TOOLS, None)
-        # Should still work, just no original system text
-        assert "search_usages" in result
-
-    def test_includes_tool_descriptions(self):
-        result = _build_tool_system_prompt(SAMPLE_TOOLS)
-        assert "Search for function usages." in result
-        assert "Complete the analysis." in result
-
-
-# ---------------------------------------------------------------------------
-# _serialize_messages()
-# ---------------------------------------------------------------------------
-
-class TestSerializeMessages:
-    def test_string_content(self):
-        messages = [{"role": "user", "content": "Analyze this code"}]
-        result = _serialize_messages(messages)
-        assert "Analyze this code" in result
-
-    def test_text_block_content(self):
-        messages = [{"role": "user", "content": [{"type": "text", "text": "Hello world"}]}]
-        result = _serialize_messages(messages)
-        assert "Hello world" in result
-
-    def test_tool_result_blocks(self):
-        messages = [{"role": "user", "content": [
-            {"type": "tool_result", "tool_use_id": "abc123", "content": '{"found": true}'}
-        ]}]
-        result = _serialize_messages(messages)
-        assert "Tool result (id: abc123)" in result
-        assert '{"found": true}' in result
-
-    def test_attribute_based_tool_use_blocks(self):
-        """Test serialization of response.content objects (attribute-based)."""
-        tool_block = type("ToolUseBlock", (), {
-            "type": "tool_use",
-            "name": "search_usages",
-            "input": {"function_name": "foo"},
-            "id": "toolu_123",
-        })()
-        text_block = type("TextBlock", (), {
-            "type": "text",
-            "text": "Let me search for that.",
-        })()
-
-        messages = [{"role": "assistant", "content": [text_block, tool_block]}]
-        result = _serialize_messages(messages)
-        assert "Let me search for that." in result
-        assert "I called search_usages with:" in result
-        assert '"function_name": "foo"' in result
-
-    def test_multi_turn_conversation(self):
-        """Test full multi-turn message serialization."""
-        tool_block = type("ToolUseBlock", (), {
-            "type": "tool_use",
-            "name": "search_usages",
-            "input": {"function_name": "validate"},
-            "id": "toolu_abc",
-        })()
-
-        messages = [
-            {"role": "user", "content": "Analyze function X"},
-            {"role": "assistant", "content": [tool_block]},
-            {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": "toolu_abc", "content": "found 3 usages"}
-            ]},
-        ]
-        result = _serialize_messages(messages)
-        assert "Analyze function X" in result
-        assert "I called search_usages" in result
-        assert "Tool result (id: toolu_abc)" in result
-        assert "found 3 usages" in result
-
-
-# ---------------------------------------------------------------------------
-# _Messages.create() with tools
-# ---------------------------------------------------------------------------
-
-class TestMessagesCreateWithTools:
-    @patch("utilities.local_claude._run_claude_cli")
-    def test_returns_tool_use_blocks(self, mock_cli):
-        mock_cli.return_value = {
-            "text": 'Thinking...\n<tool_call>{"name": "search_usages", "input": {"function_name": "foo"}}</tool_call>',
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "cost_usd": 0.001,
-        }
-
-        msgs = _Messages()
-        response = msgs.create(
-            model="claude-sonnet-4-20250514",
-            system="You are a security analyst.",
-            tools=SAMPLE_TOOLS,
-            messages=[{"role": "user", "content": "Analyze this"}],
-        )
-
-        # Should have text block + tool_use block
-        assert len(response.content) == 2
-        assert response.content[0].type == "text"
-        assert "Thinking" in response.content[0].text
-        assert response.content[1].type == "tool_use"
-        assert response.content[1].name == "search_usages"
-        assert response.content[1].input == {"function_name": "foo"}
-        assert response.content[1].id.startswith("toolu_")
-
-    @patch("utilities.local_claude._run_claude_cli")
-    def test_stop_reason_tool_use(self, mock_cli):
-        mock_cli.return_value = {
-            "text": '<tool_call>{"name": "finish", "input": {"confidence": 0.8}}</tool_call>',
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "cost_usd": 0.001,
-        }
-
-        msgs = _Messages()
-        response = msgs.create(
-            tools=SAMPLE_TOOLS,
-            messages=[{"role": "user", "content": "test"}],
-        )
-
-        assert response.stop_reason == "tool_use"
-
-    @patch("utilities.local_claude._run_claude_cli")
-    def test_stop_reason_end_turn_no_tools(self, mock_cli):
-        mock_cli.return_value = {
-            "text": "Just plain text, no tool calls.",
-            "input_tokens": 100,
-            "output_tokens": 50,
-            "cost_usd": 0.001,
-        }
-
-        msgs = _Messages()
-        response = msgs.create(
-            tools=SAMPLE_TOOLS,
-            messages=[{"role": "user", "content": "test"}],
-        )
-
-        assert response.stop_reason == "end_turn"
-
-    @patch("utilities.local_claude._run_claude_cli")
-    def test_usage_tracked(self, mock_cli):
-        mock_cli.return_value = {
-            "text": '<tool_call>{"name": "finish", "input": {}}</tool_call>',
-            "input_tokens": 200,
-            "output_tokens": 75,
-            "cost_usd": 0.002,
-        }
-
-        msgs = _Messages()
-        response = msgs.create(
-            tools=SAMPLE_TOOLS,
-            messages=[{"role": "user", "content": "test"}],
-        )
-
-        assert response.usage.input_tokens == 200
-        assert response.usage.output_tokens == 75
-
-    @patch("utilities.local_claude._run_claude_cli")
-    def test_system_prompt_includes_tools(self, mock_cli):
-        mock_cli.return_value = {
-            "text": "no tools",
-            "input_tokens": 10,
-            "output_tokens": 5,
-            "cost_usd": 0.0,
-        }
-
-        msgs = _Messages()
-        msgs.create(
-            system="Base system prompt",
-            tools=SAMPLE_TOOLS,
-            messages=[{"role": "user", "content": "test"}],
-        )
-
-        # Check that _run_claude_cli was called with enhanced system prompt
-        call_kwargs = mock_cli.call_args
-        system_arg = call_kwargs[1]["system"] if "system" in call_kwargs[1] else call_kwargs[0][2] if len(call_kwargs[0]) > 2 else None
-        # The system prompt is passed as kwarg 'system' to _run_claude_cli
-        _, kwargs = mock_cli.call_args
-        assert "search_usages" in kwargs["system"]
-        assert "Base system prompt" in kwargs["system"]
-
-
-class TestMessagesCreateWithoutTools:
-    """Backwards compatibility — create() without tools still works."""
-
-    @patch("utilities.local_claude._run_claude_cli")
-    def test_text_only_path(self, mock_cli):
-        mock_cli.return_value = {
-            "text": "The answer is 42.",
-            "input_tokens": 100,
-            "output_tokens": 20,
-            "cost_usd": 0.001,
-        }
-
-        msgs = _Messages()
-        response = msgs.create(
-            model="claude-sonnet-4-20250514",
-            messages=[{"role": "user", "content": "What is 6*7?"}],
-        )
-
-        assert response.content[0].type == "text"
-        assert response.content[0].text == "The answer is 42."
-        assert response.stop_reason == "end_turn"
-        assert response.usage.input_tokens == 100
-
-
-# ---------------------------------------------------------------------------
-# _Response backwards compatibility
-# ---------------------------------------------------------------------------
-
-class TestResponse:
-    def test_text_positional_arg(self):
-        """Existing callers pass text as positional arg."""
-        resp = _Response("hello")
-        assert resp.content[0].type == "text"
-        assert resp.content[0].text == "hello"
-        assert resp.stop_reason == "end_turn"
-
-    def test_content_kwarg(self):
-        """New path passes content list directly."""
-        block = type("ToolUseBlock", (), {"type": "tool_use", "name": "x", "input": {}, "id": "1"})()
-        resp = _Response(content=[block], stop_reason="tool_use")
-        assert resp.content[0].type == "tool_use"
-        assert resp.stop_reason == "tool_use"
-
-    def test_usage_present(self):
-        resp = _Response("hi", input_tokens=10, output_tokens=5)
-        assert resp.usage.input_tokens == 10
-        assert resp.usage.output_tokens == 5
-
-
-# ---------------------------------------------------------------------------
-# create_anthropic_client()
-# ---------------------------------------------------------------------------
-
-class TestCreateAnthropicClient:
-    @patch.dict(os.environ, {"OPENANT_LOCAL_CLAUDE": "true"}, clear=False)
-    def test_returns_local_client_when_enabled(self):
-        client = create_anthropic_client()
-        assert isinstance(client, LocalClaudeClient)
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_raises_without_api_key_when_disabled(self):
-        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
-            create_anthropic_client()
-
-
-# ---------------------------------------------------------------------------
-# AnthropicClient with local mode — token tracking end-to-end
-# ---------------------------------------------------------------------------
-
-class TestAnthropicClientLocalMode:
-    @patch("utilities.local_claude._run_claude_cli")
-    @patch.dict(os.environ, {"OPENANT_LOCAL_CLAUDE": "true"}, clear=False)
-    def test_tracks_tokens_in_local_mode(self, mock_cli):
-        mock_cli.return_value = {"text": "ok", "input_tokens": 200, "output_tokens": 100}
 
         tracker = TokenTracker()
-        client = AnthropicClient(model="claude-sonnet-4-20250514", tracker=tracker)
+        client = AnthropicClient(model="claude-sonnet-4-6", tracker=tracker)
         result = client.analyze_sync("test")
 
         assert result == "ok"
         assert tracker.total_input_tokens == 200
         assert tracker.total_output_tokens == 100
+        assert tracker.total_cost_usd == 0.01
         assert len(tracker.calls) == 1
-        assert tracker.calls[0]["model"] == "claude-sonnet-4-20250514"
 
-    @patch.dict(os.environ, {"OPENANT_LOCAL_CLAUDE": "true"}, clear=False)
-    def test_does_not_require_api_key(self):
-        env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-        env["OPENANT_LOCAL_CLAUDE"] = "true"
-        with patch.dict(os.environ, env, clear=True):
-            # Should not raise ValueError
-            client = AnthropicClient(model="claude-sonnet-4-20250514")
-            assert client.client is not None
+    @patch("utilities.llm_client._run_query_sync")
+    def test_tracks_sdk_cost(self, mock_query):
+        """Uses SDK-reported cost, not pricing table estimate."""
+        mock_query.return_value = (
+            _make_result_message(result="ok", input_tokens=100, output_tokens=50, cost=0.0042),
+            "ok",
+        )
 
-    @patch("utilities.local_claude._run_claude_cli")
-    @patch.dict(os.environ, {"OPENANT_LOCAL_CLAUDE": "true"}, clear=False)
-    def test_last_call_populated(self, mock_cli):
-        mock_cli.return_value = {"text": "ok", "input_tokens": 50, "output_tokens": 20}
+        tracker = TokenTracker()
+        client = AnthropicClient(model="claude-sonnet-4-6", tracker=tracker)
+        client.analyze_sync("test")
 
-        client = AnthropicClient(model="claude-sonnet-4-20250514")
+        assert tracker.total_cost_usd == 0.0042
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_last_call_populated(self, mock_query):
+        mock_query.return_value = (
+            _make_result_message(result="ok", input_tokens=50, output_tokens=20, cost=0.001),
+            "ok",
+        )
+
+        client = AnthropicClient(model="claude-sonnet-4-6")
         client.analyze_sync("test")
 
         last = client.get_last_call()
         assert last is not None
         assert last["input_tokens"] == 50
         assert last["output_tokens"] == 20
-        assert last["model"] == "claude-sonnet-4-20250514"
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_falls_back_to_assistant_text(self, mock_query):
+        """When ResultMessage.result is None, use last AssistantMessage text."""
+        mock_query.return_value = (
+            _make_result_message(result=None),
+            "Fallback text",
+        )
+
+        client = AnthropicClient(model="claude-sonnet-4-6")
+        result = client.analyze_sync("test")
+
+        assert result == "Fallback text"
+
+
+# ---------------------------------------------------------------------------
+# run_native_verification() — SDK-backed
+# ---------------------------------------------------------------------------
+
+class TestRunNativeVerification:
+    @patch("utilities.llm_client._run_query_sync")
+    def test_returns_result_text(self, mock_query):
+        mock_query.return_value = (
+            _make_result_message(
+                result='{"agree": false, "correct_finding": "safe"}',
+                input_tokens=5000,
+                output_tokens=2000,
+                cost=1.25,
+            ),
+            "",
+        )
+
+        result = run_native_verification(
+            prompt="Verify this", system="sys", model="claude-opus-4-6",
+            repo_path="/tmp/repo",
+        )
+
+        assert result["text"] == '{"agree": false, "correct_finding": "safe"}'
+        assert result["input_tokens"] == 5000
+        assert result["output_tokens"] == 2000
+        assert result["cost_usd"] == 1.25
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_uses_structured_output_when_available(self, mock_query):
+        structured = {"agree": False, "correct_finding": "safe", "explanation": "sanitized"}
+        mock_query.return_value = (
+            _make_result_message(
+                result="some text",
+                structured_output=structured,
+            ),
+            "",
+        )
+
+        result = run_native_verification(
+            prompt="test", system="sys", model="m", repo_path="/tmp/repo",
+            json_schema={"type": "object"},
+        )
+
+        assert json.loads(result["text"]) == structured
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_passes_correct_options(self, mock_query):
+        mock_query.return_value = (_make_result_message(), "")
+
+        run_native_verification(
+            prompt="Verify this finding",
+            system="You are a pentester.",
+            model="claude-opus-4-6",
+            repo_path="/tmp/target-repo",
+            max_budget_usd=5.0,
+        )
+
+        prompt, options = mock_query.call_args[0]
+        assert prompt == "Verify this finding"
+        assert options.model == "claude-opus-4-6"
+        assert options.system_prompt == "You are a pentester."
+        assert options.max_turns is None  # Multi-turn
+        assert "Read" in options.allowed_tools
+        assert "Grep" in options.allowed_tools
+        assert options.max_budget_usd == 5.0
+        assert options.permission_mode == "bypassPermissions"
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_sets_output_format_with_json_schema(self, mock_query):
+        mock_query.return_value = (_make_result_message(), "")
+        schema = {"type": "object", "properties": {"agree": {"type": "boolean"}}}
+
+        run_native_verification(
+            prompt="test", system="sys", model="m", repo_path="/tmp/repo",
+            json_schema=schema,
+        )
+
+        options = mock_query.call_args[0][1]
+        assert options.output_format == {"type": "json_schema", "schema": schema}
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_no_output_format_without_schema(self, mock_query):
+        mock_query.return_value = (_make_result_message(), "")
+
+        run_native_verification(
+            prompt="test", system="sys", model="m", repo_path="/tmp/repo",
+        )
+
+        options = mock_query.call_args[0][1]
+        assert options.output_format is None
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_raises_when_no_result_message(self, mock_query):
+        mock_query.return_value = (None, "some text")
+
+        with pytest.raises(RuntimeError, match="no ResultMessage"):
+            run_native_verification(
+                prompt="test", system="sys", model="m", repo_path="/tmp/repo",
+            )
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_falls_back_to_last_text_when_result_none(self, mock_query):
+        mock_query.return_value = (
+            _make_result_message(result=None),
+            "fallback text from assistant",
+        )
+
+        result = run_native_verification(
+            prompt="test", system="sys", model="m", repo_path="/tmp/repo",
+        )
+
+        assert result["text"] == "fallback text from assistant"
+
+
+# ---------------------------------------------------------------------------
+# FindingVerifier with SDK-backed verification
+# ---------------------------------------------------------------------------
+
+class TestVerifyWithNativeClaude:
+    """Tests for native Claude Code verification path in FindingVerifier."""
+
+    def _make_verifier(self, repo_path="/tmp/repo"):
+        from utilities.finding_verifier import FindingVerifier
+
+        index = MagicMock()
+        index.repo_path = Path(repo_path) if repo_path else None
+        tracker = TokenTracker()
+        verifier = FindingVerifier(index=index, tracker=tracker)
+        return verifier, tracker
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_routes_to_native_verification(self, mock_query):
+        verdict = {
+            "agree": False,
+            "correct_finding": "safe",
+            "explanation": "The input is sanitized.",
+            "exploit_path": {
+                "entry_point": "POST /api/upload",
+                "data_flow": ["req.body.filename", "sanitize(filename)"],
+                "sink_reached": False,
+                "attacker_control_at_sink": "none",
+                "path_broken_at": "sanitize()",
+            },
+        }
+        mock_query.return_value = (
+            _make_result_message(
+                result=json.dumps(verdict),
+                input_tokens=5000,
+                output_tokens=2000,
+                cost=1.25,
+            ),
+            "",
+        )
+
+        verifier, tracker = self._make_verifier()
+        result = verifier.verify_result(
+            code="function upload(req) { fs.writeFile(req.body.name, data); }",
+            finding="vulnerable",
+            attack_vector="path traversal via filename",
+            reasoning="unsanitized filename in writeFile",
+        )
+
+        assert result.correct_finding == "safe"
+        assert result.agree is False
+        assert tracker.total_cost_usd == 1.25
+
+    def test_fallback_when_no_repo_path(self):
+        verifier, _ = self._make_verifier(repo_path=None)
+        result = verifier.verify_result(
+            code="code", finding="vulnerable",
+            attack_vector="test", reasoning="test",
+        )
+
+        assert result.agree is True
+        assert result.correct_finding == "vulnerable"
+        assert "No repo_path" in result.explanation
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_sdk_failure_returns_fallback(self, mock_query):
+        mock_query.side_effect = RuntimeError("SDK crashed")
+
+        verifier, _ = self._make_verifier()
+        result = verifier.verify_result(
+            code="code", finding="bypassable",
+            attack_vector="test", reasoning="test",
+        )
+
+        assert result.agree is True
+        assert result.correct_finding == "bypassable"
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_parses_json_from_code_block(self, mock_query):
+        verdict_json = json.dumps({
+            "agree": False,
+            "correct_finding": "protected",
+            "explanation": "Auth check prevents exploitation.",
+        })
+        mock_query.return_value = (
+            _make_result_message(
+                result=f"Here's my analysis:\n\n```json\n{verdict_json}\n```",
+            ),
+            "",
+        )
+
+        verifier, _ = self._make_verifier()
+        result = verifier.verify_result(
+            code="code", finding="vulnerable",
+            attack_vector="test", reasoning="test",
+        )
+
+        assert result.correct_finding == "protected"
+        assert result.agree is False
+
+    @patch("utilities.llm_client._run_query_sync")
+    def test_unparseable_response_returns_fallback(self, mock_query):
+        mock_query.return_value = (
+            _make_result_message(result="not json at all"),
+            "",
+        )
+
+        verifier, _ = self._make_verifier()
+        result = verifier.verify_result(
+            code="code", finding="vulnerable",
+            attack_vector="test", reasoning="test",
+        )
+
+        assert result.agree is True
+        assert result.correct_finding == "vulnerable"
+
+
+# ---------------------------------------------------------------------------
+# TokenTracker
+# ---------------------------------------------------------------------------
+
+class TestTokenTrackerRestoreFrom:
+    def test_restore_from_checkpoint(self):
+        tracker = TokenTracker()
+        tracker.restore_from({
+            "total_input_tokens": 1000,
+            "total_output_tokens": 500,
+            "total_cost_usd": 0.05,
+        })
+
+        assert tracker.total_input_tokens == 1000
+        assert tracker.total_output_tokens == 500
+        assert tracker.total_cost_usd == 0.05
+
+    def test_restore_then_record_accumulates(self):
+        tracker = TokenTracker()
+        tracker.restore_from({
+            "total_input_tokens": 1000,
+            "total_output_tokens": 500,
+            "total_cost_usd": 0.05,
+        })
+        tracker.record_call("claude-sonnet-4-6", 200, 100, cost_usd=0.01)
+
+        assert tracker.total_input_tokens == 1200
+        assert tracker.total_output_tokens == 600
+        assert abs(tracker.total_cost_usd - 0.06) < 1e-9

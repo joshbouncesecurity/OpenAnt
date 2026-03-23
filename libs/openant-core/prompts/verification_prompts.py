@@ -201,3 +201,180 @@ def get_phase2_verdict_prompt(exploitability_analysis, original_finding):
     return ""  # Not used in new approach
 
 import json
+
+
+# JSON schema for structured output from native Claude Code verification
+VERIFICATION_JSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "agree": {
+            "type": "boolean",
+            "description": "Whether you agree with Stage 1's assessment"
+        },
+        "correct_finding": {
+            "type": "string",
+            "enum": ["safe", "protected", "bypassable", "vulnerable", "inconclusive"],
+            "description": "The correct finding based on exploit path analysis"
+        },
+        "exploit_path": {
+            "type": "object",
+            "description": "Analysis of the exploit path from attacker input to sink",
+            "properties": {
+                "entry_point": {
+                    "type": ["string", "null"],
+                    "description": "Where attacker input enters (null if none found)"
+                },
+                "data_flow": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Steps showing how data flows from entry to sink"
+                },
+                "sink_reached": {
+                    "type": "boolean",
+                    "description": "Whether attacker-controlled data reaches the vulnerable operation"
+                },
+                "attacker_control_at_sink": {
+                    "type": "string",
+                    "enum": ["full", "partial", "none"],
+                    "description": "Level of attacker control at the dangerous operation"
+                },
+                "path_broken_at": {
+                    "type": ["string", "null"],
+                    "description": "Where/why the exploit path breaks (null if complete)"
+                }
+            }
+        },
+        "explanation": {
+            "type": "string",
+            "description": "Detailed explanation of your analysis"
+        },
+        "security_weakness": {
+            "type": ["string", "null"],
+            "description": "Any dangerous patterns that exist but aren't currently exploitable"
+        }
+    },
+    "required": ["agree", "correct_finding", "explanation"]
+}
+
+
+def get_native_claude_verification_prompt(
+    code: str,
+    finding: str,
+    attack_vector: str,
+    reasoning: str,
+    files_included: list = None,
+    app_context: "ApplicationContext" = None,
+) -> str:
+    """
+    Verification prompt for native Claude Code multi-turn mode.
+
+    Instead of custom tools (search_usages, etc.), instructs Claude Code
+    to use its native Read/Grep/Glob tools to explore the codebase.
+
+    Args:
+        code: The code being verified.
+        finding: The Stage 1 finding (vulnerable/safe/etc).
+        attack_vector: The claimed attack vector from Stage 1.
+        reasoning: The reasoning from Stage 1.
+        files_included: Optional list of files included in context.
+        app_context: Optional ApplicationContext for reducing false positives.
+
+    Returns:
+        The formatted verification prompt.
+    """
+    # Build application context section
+    app_context_section = ""
+    if app_context:
+        app_context_section = format_app_context_for_verification(app_context) + "\n---\n\n"
+
+    # Mark the target function clearly
+    code_parts = code.split("// ========== File Boundary ==========")
+    if len(code_parts) > 1:
+        primary_code = code_parts[0].strip()
+        context_code = "\n// ========== File Boundary ==========".join(code_parts[1:])
+        code_section = f"""
+>>> TARGET FUNCTION <<<
+```
+{primary_code}
+```
+
+Context:
+```
+{context_code}
+```"""
+    else:
+        code_section = f"""
+>>> TARGET FUNCTION <<<
+```
+{code}
+```"""
+
+    # Build files hint for exploration
+    files_hint = ""
+    if files_included:
+        files_hint = "\n**Files involved:** " + ", ".join(files_included[:10]) + "\n"
+
+    # Adjust attacker description based on app context
+    if app_context and not app_context.requires_remote_trigger:
+        attacker_description = """You are an attacker on the internet. You have a browser and nothing else.
+No server access, no admin credentials, no ability to modify files on the server, and NO ABILITY TO RUN CLI COMMANDS.
+
+You must find a way to trigger this vulnerability REMOTELY. If the only attack path requires:
+- Running CLI commands locally
+- Having shell access to the server
+- Being the user who runs the application
+
+Then the vulnerability is NOT EXPLOITABLE by you, because local users can already do anything on their own machine."""
+    else:
+        attacker_description = """You are an attacker on the internet. You have a browser and nothing else. No server access, no admin credentials, no ability to modify files on the server."""
+
+    return f"""{app_context_section}Stage 1 claims this function is **{finding.upper()}**.
+
+Their reasoning: {reasoning}
+
+Claimed attack vector: {attack_vector}
+
+{code_section}
+{files_hint}
+---
+
+{attacker_description}
+
+## Your Task
+
+Verify whether this vulnerability is actually exploitable by exploring the codebase.
+
+1. **Read the target function** and understand what it does.
+2. **Trace the data flow** — use Grep and Read to find:
+   - Where attacker input enters the application (entry points, route handlers)
+   - How data flows from entry point to the target function
+   - Whether any validation, sanitization, or auth checks exist along the path
+3. **Check for security controls** — search for middleware, guards, validators that might block the attack.
+4. **Try multiple attack approaches** — think about different inputs, properties, and entry points.
+
+For EACH approach, trace through step by step until you succeed or hit a blocker.
+
+IMPORTANT:
+- Only conclude PROTECTED or SAFE if ALL approaches fail. If ANY approach succeeds, conclude VULNERABLE.
+- A vulnerability must harm someone OTHER than the attacker.
+- If this is a CLI tool/library and the attack requires local access, it is NOT a vulnerability.
+
+After your analysis, you MUST output your final verdict as a single JSON object and nothing else. Do not include any markdown, explanation, or text outside the JSON. The JSON must match this exact structure:
+
+```json
+{{
+    "agree": true/false,
+    "correct_finding": "safe" | "protected" | "bypassable" | "vulnerable" | "inconclusive",
+    "exploit_path": {{
+        "entry_point": "where attacker input enters, or null",
+        "data_flow": ["step1", "step2", "..."],
+        "sink_reached": true/false,
+        "attacker_control_at_sink": "full" | "partial" | "none",
+        "path_broken_at": "where/why the exploit path breaks, or null"
+    }},
+    "explanation": "detailed reasoning",
+    "security_weakness": "any dangerous patterns not currently exploitable, or null"
+}}
+```
+
+Your FINAL output must be ONLY this JSON object — no surrounding text or markdown."""

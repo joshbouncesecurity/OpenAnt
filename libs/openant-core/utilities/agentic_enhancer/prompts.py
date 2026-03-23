@@ -39,27 +39,29 @@ Code that HANDLES dangerous patterns is often a SECURITY CONTROL:
 
 ## Your Analysis Process
 
-1. **Get Static Dependencies First**
-   Call `get_static_dependencies` to see what functions this code calls and what calls it.
-   Then use `read_function` to examine key dependencies — especially service methods
+You have access to Read, Grep, Glob, and Bash tools to explore the codebase.
+Pre-resolved static dependencies from the parsed index are included below the code.
+
+1. **Review the pre-resolved dependencies** listed below the code.
+   Use Grep and Read to examine key dependencies — especially service methods
    that may contain authorization, validation, or sanitization.
 
 2. **Identify Dangerous Operations**
    Look for: eval, exec, SQL queries, file I/O, deserialization, command execution, innerHTML
 
 3. **Trace User Input Reachability (Backward)**
-   If dangerous operations exist, trace BACKWARDS:
+   If dangerous operations exist, trace BACKWARDS using Grep:
    - Who calls this function?
    - Who calls those callers?
    - Does the chain lead to an entry point (route handler, CLI parser, stdin)?
 
 4. **Trace Forward Into Called Functions**
    Check what the function CALLS — especially service/repository methods:
-   - Use `search_definitions` to find implementations of called methods
+   - Use Grep to find implementations of called methods
    - Look for authorization checks (auth, permission, guard, can, allow, authorize)
    - Look for validation/sanitization in called code
    - A function may delegate security to its callees (e.g., service-layer auth)
-   - For `this.someService.method()` patterns, search for the method name definition
+   - For dependency-injected services, grep for the method name to find the concrete implementation
 
 5. **Apply Classification Logic**
    ```
@@ -72,8 +74,7 @@ Code that HANDLES dangerous patterns is often a SECURITY CONTROL:
             └─ No  → VULNERABLE_INTERNAL
    ```
 
-6. **Complete with finish tool**
-   Provide classification, reasoning, and confidence level.
+6. **Provide your classification** with reasoning and confidence level.
 
 ## Entry Point Examples
 
@@ -82,7 +83,12 @@ Code that HANDLES dangerous patterns is often a SECURITY CONTROL:
 - Stdin: input(), sys.stdin
 - Files: open() with external paths
 - WebSocket: on_message, websocket.receive
-- Streamlit: st.text_input, st.file_uploader"""
+- Streamlit: st.text_input, st.file_uploader
+
+## Function ID Format
+
+When listing functions to include in context, use the format: `relative/path/to/file.ext:functionName`
+(e.g., `src/utils/validator.ts:sanitizeInput` or `saleor/core/utils.py:sanitize_input`)"""
 
 
 def get_user_prompt(
@@ -165,8 +171,8 @@ def get_user_prompt(
 
 ## Your Task
 
-1. **Start with `get_static_dependencies`** to see resolved callees and callers.
-   Then use `read_function` to examine called service/repository methods.
+1. **Review the pre-resolved dependencies** listed below.
+   Use Grep and Read to examine called service/repository methods.
 
 2. **Analyze for dangerous operations**: eval, exec, SQL, file I/O, deserialization, etc.
 
@@ -183,7 +189,7 @@ def get_user_prompt(
    - **SECURITY_CONTROL**: Defensive code (validators, sanitizers)
    - **NEUTRAL**: No security relevance
 
-6. Call the `finish` tool with your classification and reasoning.
+6. Provide your classification, reasoning, and confidence as structured JSON output.
 
 Begin your analysis."""
 

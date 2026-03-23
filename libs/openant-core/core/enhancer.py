@@ -153,6 +153,7 @@ def enhance_dataset(
             dataset=dataset,
             analyzer_output_path=analyzer_output_path,
             repo_path=repo_path,
+            verbose=os.getenv("OPENANT_VERBOSE", "").lower() == "true",
             checkpoint_path=checkpoint_path,
             progress_callback=_on_unit_done,
             skip_errors=skip_errors,

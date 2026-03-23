@@ -5,7 +5,6 @@ from .llm_client import (
     TokenTracker,
     get_global_tracker,
     reset_global_tracker,
-    create_anthropic_client,
     create_message,
     MODEL_PRICING
 )
@@ -21,7 +20,6 @@ __all__ = [
     'TokenTracker',
     'get_global_tracker',
     'reset_global_tracker',
-    'create_anthropic_client',
     'create_message',
     'MODEL_PRICING',
     'JSONCorrector',

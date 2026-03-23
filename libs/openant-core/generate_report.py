@@ -139,19 +139,11 @@ Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not 
 {findings_text}
 """
 
-    from utilities.llm_client import create_anthropic_client, create_message
+    from utilities.llm_client import create_message
 
-    if os.getenv("OPENANT_LOCAL_CLAUDE", "").lower() != "true":
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not found in environment")
-
-    client = create_anthropic_client()
     return create_message(
-        client,
+        prompt=prompt,
         model=REPORT_MODEL,
-        max_tokens=MAX_TOKENS,
-        messages=[{"role": "user", "content": prompt}]
     )
 
 
