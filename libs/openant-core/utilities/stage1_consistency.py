@@ -278,7 +278,8 @@ def _resolve_stage1_inconsistency(
         tracker.record_call(
             model=CONSISTENCY_MODEL,
             input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens
+            output_tokens=response.usage.output_tokens,
+            cost_usd=getattr(response, 'cost_usd', None),
         )
 
         # Parse response

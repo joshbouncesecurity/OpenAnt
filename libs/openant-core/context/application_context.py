@@ -32,7 +32,7 @@ from typing import Any
 from dotenv import load_dotenv
 
 from utilities.file_io import read_json, write_json
-from utilities.llm_client import create_anthropic_client, create_message
+from utilities.llm_client import create_message
 from utilities.model_config import MODEL_AUXILIARY
 
 # Load environment variables
@@ -506,15 +506,9 @@ def generate_application_context(
 
     # Call LLM
     print(f"Generating context with {model}...", file=sys.stderr)
-    client = create_anthropic_client()
     response_text = create_message(
-        client,
+        prompt=CONTEXT_GENERATION_PROMPT.format(sources=sources_text),
         model=model,
-        max_tokens=2000,
-        messages=[{
-            "role": "user",
-            "content": CONTEXT_GENERATION_PROMPT.format(sources=sources_text)
-        }]
     )
 
     # Extract JSON from response

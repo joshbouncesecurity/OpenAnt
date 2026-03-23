@@ -40,8 +40,7 @@ def _validate_concurrency(value: int) -> int:
     if value < 1:
         raise ValueError(f"--concurrency must be >= 1, got {value}")
     if value > 1:
-        from utilities.local_claude import is_enabled as _use_local_claude
-        if _use_local_claude():
+        if os.getenv("OPENANT_LOCAL_CLAUDE", "").lower() == "true":
             print(
                 f"[Warning] concurrency={value} with OPENANT_LOCAL_CLAUDE=true "
                 f"will spawn {value} simultaneous claude CLI processes. "

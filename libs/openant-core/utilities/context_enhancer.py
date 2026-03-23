@@ -400,6 +400,13 @@ class ContextEnhancer:
                         if "code" in cp_units_by_id[unit_id]:
                             unit["code"] = cp_units_by_id[unit_id]["code"]
 
+                # Restore cost accumulator from checkpoint
+                cp_metadata = checkpoint_data.get("metadata", {})
+                cp_token_usage = cp_metadata.get("token_usage")
+                if cp_token_usage:
+                    self.tracker.restore_from(cp_token_usage)
+                    self._log("info", f"Restored cost: ${cp_token_usage.get('total_cost_usd', 0):.4f}")
+
                 self._log("info", f"Restored {len(processed_ids)} already-processed units", units=len(processed_ids))
 
         remaining = total - len(processed_ids)

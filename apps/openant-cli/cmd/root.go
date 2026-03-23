@@ -69,6 +69,10 @@ func useLocalClaude() bool {
 // Claude Code session handles authentication.
 func requireAPIKey() string {
 	if useLocalClaude() {
+		// Warn if an API key is also configured — local mode takes precedence
+		if key := resolvedAPIKey(); key != "" {
+			fmt.Fprintln(os.Stderr, "[Note] OPENANT_LOCAL_CLAUDE=true is set — using local Claude Code session (API key ignored)")
+		}
 		return "" // local Claude Code mode — no API key needed
 	}
 	key := resolvedAPIKey()

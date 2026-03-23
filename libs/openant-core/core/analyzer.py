@@ -67,15 +67,19 @@ def _recount_metrics(results: list) -> AnalysisMetrics:
     return AnalysisMetrics(total=len(results), **counts)
 
 
-def _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id):
+def _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id,
+                             tracker=None):
     """Save analyze checkpoint using atomic writes."""
-    atomic_write_json(checkpoint_path, {
+    data = {
         "results": results,
         "code_by_route": code_by_route,
         "counts": counts,
         "dataset": os.path.basename(dataset_path),
         "model": model_id,
-    })
+    }
+    if tracker:
+        data["token_usage"] = tracker.get_totals()
+    atomic_write_json(checkpoint_path, data)
 
 
 def run_analysis(
@@ -233,6 +237,11 @@ def run_analysis(
                     counts[finding] += 1
                 elif r.get("verdict") == "ERROR":
                     counts["errors"] += 1
+            # Restore cost accumulator from checkpoint
+            cp_token_usage = cp.get("token_usage")
+            if cp_token_usage:
+                get_global_tracker().restore_from(cp_token_usage)
+
             print(f"[Analyze] Resuming: {len(completed_ids)} units already done", file=sys.stderr)
         except (json.JSONDecodeError, OSError):
             # Corrupt checkpoint — start fresh
@@ -305,7 +314,7 @@ def run_analysis(
             counts["errors"] += 1
 
         if checkpoint_path:
-            _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id)
+            _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id, tracker)
         progress.report(unit_label=uid, detail=finding, unit_elapsed=unit_elapsed)
 
     def _on_error(unit, exc):
@@ -320,7 +329,7 @@ def run_analysis(
             "error": str(exc),
         })
         if checkpoint_path:
-            _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id)
+            _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id, tracker)
         progress.report(unit_label=uid, detail="error")
 
     run_parallel(
