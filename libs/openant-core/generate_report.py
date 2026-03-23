@@ -30,7 +30,6 @@ import os
 import sys
 from datetime import datetime
 
-import anthropic
 from dotenv import load_dotenv
 from utilities.file_io import read_json
 
@@ -38,7 +37,8 @@ from utilities.file_io import read_json
 load_dotenv()
 
 
-REPORT_MODEL = "claude-sonnet-4-20250514"
+from utilities.model_config import MODEL_AUXILIARY
+REPORT_MODEL = MODEL_AUXILIARY
 MAX_TOKENS = 4096
 
 

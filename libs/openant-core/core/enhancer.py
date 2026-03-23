@@ -101,7 +101,8 @@ def enhance_dataset(
                     usage=UsageInfo(),
                 )
 
-    model_id = "claude-sonnet-4-20250514" if model == "sonnet" else "claude-opus-4-6"
+    from utilities.model_config import MODEL_AUXILIARY, MODEL_PRIMARY
+    model_id = MODEL_AUXILIARY if model == "sonnet" else MODEL_PRIMARY
     print(f"[Enhance] Mode: {mode}", file=sys.stderr)
     print(f"[Enhance] Model: {model_id}", file=sys.stderr)
 

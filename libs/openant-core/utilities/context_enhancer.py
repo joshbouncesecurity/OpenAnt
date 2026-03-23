@@ -34,7 +34,8 @@ _null_logger.addHandler(logging.NullHandler())
 
 
 # Use Sonnet for context enhancement (cost-effective auxiliary task)
-CONTEXT_ENHANCEMENT_MODEL = "claude-sonnet-4-20250514"
+from .model_config import MODEL_AUXILIARY
+CONTEXT_ENHANCEMENT_MODEL = MODEL_AUXILIARY
 
 
 def get_context_enhancement_prompt(
@@ -404,7 +405,7 @@ class ContextEnhancer:
         remaining = total - len(processed_ids)
         self._log("info", f"Enhancing {remaining} units with agentic analysis ({len(processed_ids)} already done)", units=remaining)
         self._log("info", "Mode: Iterative tool use (traces call paths)")
-        self._log("info", "Model: claude-sonnet-4-20250514")
+        self._log("info", f"Model: {CONTEXT_ENHANCEMENT_MODEL}")
         if checkpoint_path:
             self._log("info", f"Checkpoint: {checkpoint_path}")
 

@@ -18,7 +18,8 @@ from utilities.llm_client import AnthropicClient, TokenTracker
 
 
 # Use a cheaper/faster model for consistency checks
-CONSISTENCY_MODEL = "claude-sonnet-4-20250514"
+from .model_config import MODEL_AUXILIARY
+CONSISTENCY_MODEL = MODEL_AUXILIARY
 MAX_TOKENS = 4096
 
 

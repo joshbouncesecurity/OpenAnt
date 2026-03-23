@@ -14,6 +14,7 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from utilities.model_config import MODEL_AUXILIARY
 from context.application_context import (
     ApplicationType,
     APPLICATION_TYPE_INFO,
@@ -78,8 +79,8 @@ Manual Override:
 
     parser.add_argument(
         "--model", "-m",
-        default="claude-sonnet-4-20250514",
-        help="Anthropic model to use (default: claude-sonnet-4-20250514)",
+        default=MODEL_AUXILIARY,
+        help=f"Anthropic model to use (default: {MODEL_AUXILIARY})",
     )
 
     parser.add_argument(

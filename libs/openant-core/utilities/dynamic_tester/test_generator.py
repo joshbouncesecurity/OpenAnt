@@ -12,7 +12,8 @@ import re
 
 from utilities.llm_client import AnthropicClient, TokenTracker
 
-SONNET_MODEL = "claude-sonnet-4-20250514"
+from ..model_config import MODEL_AUXILIARY
+SONNET_MODEL = MODEL_AUXILIARY
 
 # Map language strings to Dockerfile template names
 LANGUAGE_MAP = {
