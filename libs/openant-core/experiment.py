@@ -467,7 +467,8 @@ def run_experiment(
         Experiment results with metrics
     """
     # Select model
-    model_id = "claude-opus-4-20250514" if model == "opus" else "claude-sonnet-4-20250514"
+    from utilities.model_config import MODEL_AUXILIARY, MODEL_PRIMARY
+    model_id = MODEL_PRIMARY if model == "opus" else MODEL_AUXILIARY
     print(f"Using model: {model_id}")
     print(f"Enhanced context: {enhanced}")
     print(f"Context correction: {correct_context}")

@@ -33,6 +33,7 @@ from dotenv import load_dotenv
 
 from utilities.file_io import read_json, write_json
 from utilities.llm_client import create_anthropic_client, create_message
+from utilities.model_config import MODEL_AUXILIARY
 
 # Load environment variables
 load_dotenv()
@@ -464,7 +465,7 @@ Respond with a JSON object (no other text):
 
 def generate_application_context(
     repo_path: Path,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = MODEL_AUXILIARY,
     force_regenerate: bool = False,
 ) -> ApplicationContext:
     """Generate application context using LLM analysis.

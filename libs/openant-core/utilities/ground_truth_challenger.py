@@ -19,6 +19,7 @@ from typing import Optional
 from dataclasses import dataclass
 
 from .llm_client import AnthropicClient
+from .model_config import MODEL_AUXILIARY
 
 
 @dataclass
@@ -209,13 +210,13 @@ class GroundTruthChallenger:
     2. Validate false negatives - did the model miss something, or is the ground truth wrong?
     """
 
-    def __init__(self, client: AnthropicClient, model: str = "claude-sonnet-4-20250514"):
+    def __init__(self, client: AnthropicClient, model: str = MODEL_AUXILIARY):
         """
         Initialize the challenger.
 
         Args:
             client: Anthropic client for LLM calls
-            model: Model to use for arbitration (Sonnet for cost efficiency)
+            model: Model to use for arbitration.
         """
         self.client = client
         self.model = model

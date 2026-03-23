@@ -14,7 +14,8 @@ from utilities.llm_client import create_anthropic_client, create_message
 load_dotenv()
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
-MODEL = "claude-opus-4-6"
+from utilities.model_config import MODEL_PRIMARY
+MODEL = MODEL_PRIMARY
 
 
 def _check_api_key():

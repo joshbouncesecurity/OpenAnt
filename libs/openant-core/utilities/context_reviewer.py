@@ -13,6 +13,7 @@ import sys
 from typing import Optional
 
 from .llm_client import AnthropicClient
+from .model_config import MODEL_AUXILIARY
 from .context_corrector import gather_source_files, search_files_for_context
 
 
@@ -176,7 +177,7 @@ class ContextReviewer:
         prompt = get_context_review_prompt(code, route, handler, files_included)
 
         try:
-            response = self.client.analyze_sync(prompt, model="claude-sonnet-4-20250514")
+            response = self.client.analyze_sync(prompt, model=MODEL_AUXILIARY)
             review = self._parse_json_response(response)
 
             if not review:

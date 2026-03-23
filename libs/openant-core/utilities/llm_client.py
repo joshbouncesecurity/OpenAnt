@@ -15,7 +15,7 @@ Classes:
 Usage:
     from utilities.llm_client import AnthropicClient, get_global_tracker
 
-    client = AnthropicClient(model="claude-opus-4-20250514")
+    client = AnthropicClient(model="claude-opus-4-6")
     response = client.analyze_sync("Analyze this code...")
 
     tracker = get_global_tracker()
@@ -36,12 +36,13 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from .local_claude import LocalClaudeClient, is_enabled as _use_local_claude
+from .model_config import MODEL_PRIMARY, MODEL_AUXILIARY, MODEL_DEFAULT
 
 
 # Pricing per million tokens (as of December 2024)
 MODEL_PRICING = {
-    "claude-opus-4-20250514": {"input": 15.00, "output": 75.00},
-    "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
+    MODEL_PRIMARY: {"input": 15.00, "output": 75.00},
+    MODEL_AUXILIARY: {"input": 3.00, "output": 15.00},
     # Fallback for unknown models (use Sonnet pricing as conservative estimate)
     "default": {"input": 3.00, "output": 15.00}
 }
@@ -196,13 +197,12 @@ class AnthropicClient:
         Claude Code session's authentication instead of an API key.
     """
 
-    def __init__(self, model: str = "claude-opus-4-20250514", tracker: TokenTracker = None):
+    def __init__(self, model: str = MODEL_DEFAULT, tracker: TokenTracker = None):
         """
         Initialize the Anthropic client.
 
         Args:
-            model: Model identifier. Default is Claude Opus 4 (highest capability).
-                   Use "claude-sonnet-4-20250514" for cost-effective option.
+            model: Model identifier. Defaults to MODEL_DEFAULT from model_config.
             tracker: Optional TokenTracker instance. Uses global tracker if not provided.
         """
         self.client = create_anthropic_client()
