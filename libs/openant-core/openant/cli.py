@@ -5,6 +5,7 @@ OpenAnt CLI — Unified command-line interface for vulnerability analysis.
 Commands:
     openant scan /path/to/repo --output /tmp/results
     openant parse /path/to/repo --output /tmp/results
+    openant generate-context /path/to/repo -o /tmp/results/application_context.json
     openant enhance dataset.json --analyzer-output ao.json --repo-path /repo -o enhanced.json
     openant analyze dataset.json --output /tmp/results
     openant verify results.json --analyzer-output ao.json --output /tmp/results
@@ -29,6 +30,20 @@ def _output_json(data: dict):
     """Write JSON to stdout."""
     json.dump(data, sys.stdout, indent=2)
     sys.stdout.write("\n")
+
+
+def _find_app_context(*candidate_dirs: str) -> str | None:
+    """Search candidate directories for application_context.json.
+
+    Returns the first existing path, or None.
+    """
+    for d in candidate_dirs:
+        if not d:
+            continue
+        path = os.path.join(d, "application_context.json")
+        if os.path.isfile(path):
+            return path
+    return None
 
 
 def _validate_concurrency(value: int) -> int:
@@ -132,6 +147,57 @@ def cmd_parse(args):
         return 2
 
 
+def cmd_generate_context(args):
+    """Generate application security context for a repository."""
+    from pathlib import Path
+    from context.application_context import (
+        generate_application_context,
+        save_context,
+        format_context_for_prompt,
+    )
+    from core.schemas import success, error
+    from core.step_report import step_context
+
+    output_path = args.output or os.path.join(args.repo, "application_context.json")
+    output_dir = os.path.dirname(os.path.abspath(output_path))
+
+    try:
+        with step_context("generate-context", output_dir, inputs={
+            "repo_path": os.path.abspath(args.repo),
+            "force": args.force,
+        }) as ctx:
+            app_context = generate_application_context(
+                Path(args.repo),
+                force_regenerate=args.force,
+            )
+            save_context(app_context, Path(output_path))
+
+            ctx.summary = {
+                "application_type": app_context.application_type,
+                "confidence": app_context.confidence,
+                "source": app_context.source,
+            }
+            ctx.outputs = {"app_context_path": os.path.abspath(output_path)}
+
+        result = {
+            "app_context_path": os.path.abspath(output_path),
+            "application_type": app_context.application_type,
+            "purpose": app_context.purpose,
+            "confidence": app_context.confidence,
+            "source": app_context.source,
+        }
+
+        if args.show_prompt:
+            result["prompt_format"] = format_context_for_prompt(app_context)
+
+        _output_json(success(result))
+        return 0
+
+    except Exception as e:
+        _output_json(error(str(e)))
+        return 2
+
+
 def cmd_enhance(args):
     """Enhance a dataset with security context."""
     from core.enhancer import enhance_dataset
@@ -196,6 +262,18 @@ def cmd_analyze(args):
 
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_analyze_")
 
+    # Auto-discover application context if not explicitly provided
+    app_context_path = args.app_context
+    if not app_context_path:
+        app_context_path = _find_app_context(
+            output_dir,
+            args.repo_path,
+            os.path.dirname(os.path.abspath(args.dataset)),
+        )
+        if app_context_path:
+            print(f"[Analyze] Auto-discovered application context: {app_context_path}",
+                  file=sys.stderr)
+
     try:
         concurrency = _validate_concurrency(args.concurrency)
         with step_context("analyze", output_dir, inputs={
@@ -208,7 +286,7 @@ def cmd_analyze(args):
                 dataset_path=args.dataset,
                 output_dir=output_dir,
                 analyzer_output_path=args.analyzer_output,
-                app_context_path=args.app_context,
+                app_context_path=app_context_path,
                 repo_path=args.repo_path,
                 limit=args.limit,
                 model=args.model,
@@ -249,7 +327,7 @@ def cmd_analyze(args):
                         results_path=result.results_path,
                         output_dir=output_dir,
                         analyzer_output_path=args.analyzer_output,
-                        app_context_path=args.app_context,
+                        app_context_path=app_context_path,
                         repo_path=args.repo_path,
                         concurrency=concurrency,
                         fresh=args.fresh,
@@ -291,19 +369,31 @@ def cmd_verify(args):
 
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_verify_")
 
+    # Auto-discover application context if not explicitly provided
+    app_context_path = args.app_context
+    if not app_context_path:
+        app_context_path = _find_app_context(
+            output_dir,
+            args.repo_path,
+            os.path.dirname(os.path.abspath(args.results)),
+        )
+        if app_context_path:
+            print(f"[Verify] Auto-discovered application context: {app_context_path}",
+                  file=sys.stderr)
+
     try:
         concurrency = _validate_concurrency(args.concurrency)
         with step_context("verify", output_dir, inputs={
             "results_path": os.path.abspath(args.results),
             "analyzer_output_path": os.path.abspath(args.analyzer_output),
-            "app_context_path": os.path.abspath(args.app_context) if args.app_context else None,
+            "app_context_path": os.path.abspath(app_context_path) if app_context_path else None,
             "repo_path": os.path.abspath(args.repo_path) if args.repo_path else None,
         }) as ctx:
             result = run_verification(
                 results_path=args.results,
                 output_dir=output_dir,
                 analyzer_output_path=args.analyzer_output,
-                app_context_path=args.app_context,
+                app_context_path=app_context_path,
                 repo_path=args.repo_path,
                 fresh=args.fresh,
                 concurrency=concurrency,
@@ -569,6 +659,22 @@ def main():
     parse_p.add_argument("--fresh", action="store_true",
                          help="Delete existing dataset and reparse from scratch (default: reuse existing units)")
     parse_p.set_defaults(func=cmd_parse)
+
+    # ---------------------------------------------------------------
+    # generate-context — generate application security context
+    # ---------------------------------------------------------------
+    gc_p = subparsers.add_parser(
+        "generate-context",
+        help="Generate application security context for a repository",
+    )
+    gc_p.add_argument("repo", help="Path to repository")
+    gc_p.add_argument("--output", "-o",
+                       help="Output path (default: <repo>/application_context.json)")
+    gc_p.add_argument("--force", action="store_true",
+                       help="Force regeneration, ignoring OPENANT.md override files")
+    gc_p.add_argument("--show-prompt", action="store_true",
+                       help="Include formatted prompt text in output")
+    gc_p.set_defaults(func=cmd_generate_context)
 
     # ---------------------------------------------------------------
     # enhance — add security context to a dataset
