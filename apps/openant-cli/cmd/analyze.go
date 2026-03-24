@@ -70,6 +70,9 @@ func runAnalyze(cmd *cobra.Command, args []string) {
 		if analyzeAnalyzerOutput == "" {
 			analyzeAnalyzerOutput = ctx.scanFile("analyzer_output.json")
 		}
+		if analyzeAppContext == "" {
+			analyzeAppContext = ctx.scanFile("application_context.json")
+		}
 		if analyzeRepoPath == "" {
 			analyzeRepoPath = ctx.RepoPath
 		}

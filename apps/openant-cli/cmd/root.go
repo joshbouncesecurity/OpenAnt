@@ -32,11 +32,12 @@ Stage 1: Detect potential vulnerabilities via code analysis
 Stage 2: Simulate an attacker to eliminate false positives
 
 Commands:
-  scan          Full pipeline: parse → enhance → detect → verify → report
-  parse         Extract code units from a repository
-  enhance       Add security context to a parsed dataset
-  analyze       Run Stage 1 vulnerability detection
-  verify        Run Stage 2 attacker simulation
+  scan              Full pipeline: parse → enhance → detect → verify → report
+  parse             Extract code units from a repository
+  generate-context  Generate application security context
+  enhance           Add security context to a parsed dataset
+  analyze           Run Stage 1 vulnerability detection
+  verify            Run Stage 2 attacker simulation
   build-output  Assemble pipeline_output.json from verified results
   dynamic-test  Docker-isolated exploit testing
   report        Generate reports from analysis results
@@ -98,6 +99,7 @@ func init() {
 	rootCmd.AddCommand(initCmd)
 	rootCmd.AddCommand(scanCmd)
 	rootCmd.AddCommand(parseCmd)
+	rootCmd.AddCommand(generateContextCmd)
 	rootCmd.AddCommand(enhanceCmd)
 	rootCmd.AddCommand(analyzeCmd)
 	rootCmd.AddCommand(verifyCmd)
