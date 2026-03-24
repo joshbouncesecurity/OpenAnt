@@ -195,16 +195,43 @@ ENTRY_POINT_PATTERNS = {
 }
 
 
-def gather_context_sources(repo_path: Path) -> dict[str, str]:
+def find_override_file(repo_path: Path) -> Path | None:
+    """Return path to first existing manual override file, or None.
+
+    Args:
+        repo_path: Path to repository root.
+
+    Returns:
+        Path to override file if found, None otherwise.
+    """
+    for filename in MANUAL_OVERRIDE_FILES:
+        filepath = repo_path / filename
+        if filepath.exists():
+            return filepath
+    return None
+
+
+def gather_context_sources(repo_path: Path, override_path: Path | None = None) -> dict[str, str]:
     """Gather relevant files for context generation.
 
     Args:
         repo_path: Path to the repository root.
+        override_path: Optional path to override file to include as a source.
 
     Returns:
         Dictionary mapping filename to content.
     """
     sources = {}
+
+    # Include override file content if provided (merge mode)
+    if override_path is not None:
+        try:
+            content = override_path.read_text(errors="ignore")
+            if len(content) > 10000:
+                content = content[:10000] + "\n\n[... truncated ...]"
+            sources[override_path.name] = content
+        except Exception as e:
+            print(f"Warning: Could not read {override_path.name}: {e}", file=sys.stderr)
 
     # Read priority files
     for filename in CONTEXT_FILES:
@@ -387,12 +414,21 @@ def _build_type_descriptions() -> str:
     return "\n".join(lines)
 
 
+MERGE_CONTEXT_SUPPLEMENT = """
+## Developer-Provided Context
+
+The repository maintainer provided a manual security context file (listed above
+in the sources). Treat their classification of intended behaviors, trust
+boundaries, and not-a-vulnerability entries as authoritative hints. Validate the
+application type against the other source files and reconcile any conflicts.
+"""
+
 CONTEXT_GENERATION_PROMPT = """Analyze this software repository and generate a security analysis context.
 
 ## Repository Information
 
 {sources}
-
+{developer_context}
 ---
 
 ## Task
@@ -467,6 +503,7 @@ def generate_application_context(
     repo_path: Path,
     model: str = MODEL_AUXILIARY,
     force_regenerate: bool = False,
+    override_mode: str | None = None,
 ) -> ApplicationContext:
     """Generate application context using LLM analysis.
 
@@ -475,7 +512,9 @@ def generate_application_context(
     Args:
         repo_path: Path to the repository root.
         model: Anthropic model to use for generation.
-        force_regenerate: If True, skip manual override check.
+        force_regenerate: If True, skip manual override check (legacy, use override_mode).
+        override_mode: How to handle override files: "use" (verbatim), "merge" (feed
+            into LLM), "ignore" (skip override), or None (legacy behavior).
 
     Returns:
         ApplicationContext with security-relevant information.
@@ -485,16 +524,29 @@ def generate_application_context(
     """
     repo_path = Path(repo_path)
 
-    # Check for manual override first
-    if not force_regenerate:
+    # Resolve effective mode from override_mode or legacy force_regenerate
+    if override_mode is None:
+        effective_mode = "ignore" if force_regenerate else "use"
+    else:
+        effective_mode = override_mode
+
+    # "use" mode: return manual override verbatim if found
+    if effective_mode == "use":
         manual_context = check_manual_override(repo_path)
         if manual_context:
-            print(f"Using manual override from repository", file=sys.stderr)
+            print("Using manual override from repository", file=sys.stderr)
             return manual_context
 
-    # Gather sources
+    # "merge" mode: find override file to include as LLM source
+    override_path = None
+    if effective_mode == "merge":
+        override_path = find_override_file(repo_path)
+        if override_path:
+            print(f"Merging {override_path.name} into LLM context", file=sys.stderr)
+
+    # Gather sources (includes override file in merge mode)
     print(f"Gathering context sources from {repo_path}...", file=sys.stderr)
-    sources = gather_context_sources(repo_path)
+    sources = gather_context_sources(repo_path, override_path=override_path)
 
     if not sources:
         raise ValueError(f"No context sources found in {repo_path}")
@@ -504,10 +556,16 @@ def generate_application_context(
     for name, content in sources.items():
         sources_text += f"\n### {name}\n```\n{content}\n```\n"
 
+    # Add developer context supplement when merging
+    developer_context = MERGE_CONTEXT_SUPPLEMENT if override_path else ""
+
     # Call LLM
     print(f"Generating context with {model}...", file=sys.stderr)
     response_text = create_message(
-        prompt=CONTEXT_GENERATION_PROMPT.format(sources=sources_text),
+        prompt=CONTEXT_GENERATION_PROMPT.format(
+            sources=sources_text,
+            developer_context=developer_context,
+        ),
         model=model,
     )
 
@@ -524,7 +582,7 @@ def generate_application_context(
     except json.JSONDecodeError as e:
         raise ValueError(f"Failed to parse LLM response as JSON: {e}\nResponse: {response_text}")
 
-    data['source'] = 'llm'
+    data['source'] = 'merged' if override_path else 'llm'
 
     # Validate and create context (will raise UnsupportedApplicationTypeError if invalid)
     return ApplicationContext(**data)

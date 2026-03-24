@@ -426,6 +426,12 @@ class TestGenerateContextHelp:
         assert "repository" in output.lower()
         assert "context" in output.lower()
 
+    def test_help_shows_override_mode(self):
+        result = run_cli("generate-context", "--help")
+        assert result.returncode == 0
+        output = result.stdout + result.stderr
+        assert "override-mode" in output
+
 
 class TestGenerateContext:
     """Tests for `openant generate-context` (no API key)."""
@@ -436,6 +442,16 @@ class TestGenerateContext:
         output = result.stderr + result.stdout
         assert result.returncode != 0
         assert "api key" in output.lower()
+
+    def test_force_and_override_mode_mutually_exclusive(self, sample_python_repo):
+        """--force and --override-mode together should error."""
+        result = run_cli(
+            "generate-context", sample_python_repo,
+            "--force", "--override-mode", "merge",
+        )
+        output = result.stderr + result.stdout
+        assert result.returncode != 0
+        assert "mutually exclusive" in output.lower()
 
 
 class TestApiKeyHandling:

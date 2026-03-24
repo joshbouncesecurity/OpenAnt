@@ -575,7 +575,14 @@ python -m context.generate_context --list-types  # Show supported types
 
 **Manual Override:**
 
-Create `OPENANT.md` or `OPENANT.json` in repo root to override automatic detection.
+Create `OPENANT.md` or `OPENANT.json` in repo root to provide explicit context.
+
+When a manual override file is detected, the CLI prompts for how to handle it:
+- `use` — Use override as-is, skip LLM generation (default)
+- `merge` — Feed override content into LLM alongside other sources
+- `ignore` — Ignore override, generate from scratch
+
+Use `--override-mode <mode>` to skip the prompt, or `--force` as shortcut for `--override-mode ignore`.
 
 ---
 
