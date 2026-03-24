@@ -16,6 +16,13 @@ OpenAnt supports these four application types:
 
 **Note:** Manual overrides can use any `application_type` value (validation is skipped for manual overrides). Use this to analyze unsupported application types by mapping them to the closest supported type.
 
+**Override modes:** When this file is detected, the `generate-context` command prompts for how to handle it:
+- `use` — Use this file as-is, skip LLM generation (default)
+- `merge` — Feed this file into the LLM alongside other repo sources (README, etc.)
+- `ignore` — Ignore this file and generate context from scratch
+
+Use `--override-mode <mode>` to skip the prompt.
+
 ## Format
 
 Include a JSON code block with the following structure:
