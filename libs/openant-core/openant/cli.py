@@ -161,14 +161,23 @@ def cmd_generate_context(args):
     output_path = args.output or os.path.join(args.repo, "application_context.json")
     output_dir = os.path.dirname(os.path.abspath(output_path))
 
+    # Resolve effective override mode
+    if args.override_mode:
+        effective_mode = args.override_mode
+    elif args.force:
+        effective_mode = "ignore"
+    else:
+        effective_mode = None  # legacy default behavior
+
     try:
         with step_context("generate-context", output_dir, inputs={
             "repo_path": os.path.abspath(args.repo),
             "force": args.force,
+            "override_mode": effective_mode,
         }) as ctx:
             app_context = generate_application_context(
                 Path(args.repo),
-                force_regenerate=args.force,
+                override_mode=effective_mode,
             )
             save_context(app_context, Path(output_path))
 
@@ -672,6 +681,9 @@ def main():
                        help="Output path (default: <repo>/application_context.json)")
     gc_p.add_argument("--force", action="store_true",
                        help="Force regeneration, ignoring OPENANT.md override files")
+    gc_p.add_argument("--override-mode", choices=["use", "ignore", "merge"],
+                       default=None,
+                       help="How to handle OPENANT.md: use (as-is), merge (into LLM), ignore")
     gc_p.add_argument("--show-prompt", action="store_true",
                        help="Include formatted prompt text in output")
     gc_p.set_defaults(func=cmd_generate_context)

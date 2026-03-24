@@ -55,6 +55,13 @@ python -m context.generate_context /path/to/repo --list-types  # Show supported 
 
 **Manual override:** Create `OPENANT.md` or `OPENANT.json` in repo root. See `context/OPENANT_TEMPLATE.md` for format.
 
+**Override modes:** When a manual override file is detected, the CLI prompts for how to handle it:
+- `use` — Use override as-is, skip LLM (default)
+- `merge` — Feed override into LLM alongside other sources
+- `ignore` — Ignore override, generate from scratch
+
+Use `--override-mode <mode>` to skip the prompt, or `--force` as shortcut for `--override-mode ignore`.
+
 **Unsupported types:** If a repository doesn't match supported types, OpenAnt exits with error code 2 and instructions for creating a manual override.
 
 # Autopilot (Autonomous Pipeline)

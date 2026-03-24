@@ -251,6 +251,13 @@ python -m context.generate_context /path/to/repo
 
 **Manual Override:** Place `OPENANT.md` or `OPENANT.json` in repo root to provide explicit context. Manual overrides bypass type validation.
 
+**Override Modes:** When a manual override file is detected, the CLI prompts for how to handle it:
+- `use` — Use override as-is, skip LLM generation (default)
+- `merge` — Feed override content into LLM alongside other sources (source="merged")
+- `ignore` — Ignore override, generate from scratch
+
+Use `--override-mode <mode>` to skip the prompt, or `--force` as shortcut for `--override-mode ignore`.
+
 **Integration:** Context automatically loaded in `experiment.py` and injected into Stage 1 and Stage 2 prompts.
 
 **Results on LangChain:**
