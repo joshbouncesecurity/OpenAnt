@@ -17,6 +17,7 @@ import sys
 from core.schemas import EnhanceResult, UsageInfo
 from core import tracking
 from core.progress import ProgressReporter
+from utilities.file_io import read_json
 from utilities.rate_limiter import configure_rate_limiter
 
 

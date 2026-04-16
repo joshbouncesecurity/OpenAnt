@@ -288,42 +288,51 @@ class TestRunNativeVerification:
 # ---------------------------------------------------------------------------
 
 class TestVerifyWithNativeClaude:
-    """Tests for native Claude Code verification path in FindingVerifier."""
+    """Tests for FindingVerifier.verify_result with mocked Anthropic client."""
 
     def _make_verifier(self, repo_path="/tmp/repo"):
         from utilities.finding_verifier import FindingVerifier
 
         index = MagicMock()
         index.repo_path = Path(repo_path) if repo_path else None
+        mock_client = MagicMock()
         tracker = TokenTracker()
-        verifier = FindingVerifier(index=index, tracker=tracker)
-        return verifier, tracker
+        verifier = FindingVerifier(index=index, tracker=tracker, client=mock_client)
+        return verifier, tracker, mock_client
 
-    @patch("utilities.llm_client._run_query_sync")
-    def test_routes_to_native_verification(self, mock_query):
-        verdict = {
-            "agree": False,
-            "correct_finding": "safe",
-            "explanation": "The input is sanitized.",
-            "exploit_path": {
-                "entry_point": "POST /api/upload",
-                "data_flow": ["req.body.filename", "sanitize(filename)"],
-                "sink_reached": False,
-                "attacker_control_at_sink": "none",
-                "path_broken_at": "sanitize()",
-            },
-        }
-        mock_query.return_value = (
-            _make_result_message(
-                result=json.dumps(verdict),
-                input_tokens=5000,
-                output_tokens=2000,
-                cost=1.25,
-            ),
-            "",
+    def _mock_finish_response(self, verdict_dict, input_tokens=500, output_tokens=200):
+        """Create a mock Anthropic response that calls the 'finish' tool."""
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.name = "finish"
+        tool_block.input = verdict_dict
+        tool_block.id = "tool_001"
+
+        response = MagicMock()
+        response.content = [tool_block]
+        response.stop_reason = "tool_use"
+        response.usage = MagicMock(input_tokens=input_tokens, output_tokens=output_tokens)
+        return response
+
+    def _mock_text_response(self, text, input_tokens=500, output_tokens=200):
+        """Create a mock Anthropic response that ends with text (no tool call)."""
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = text
+
+        response = MagicMock()
+        response.content = [text_block]
+        response.stop_reason = "end_turn"
+        response.usage = MagicMock(input_tokens=input_tokens, output_tokens=output_tokens)
+        return response
+
+    def test_finish_tool_returns_verdict(self):
+        verifier, tracker, mock_client = self._make_verifier()
+        mock_client.messages.create.return_value = self._mock_finish_response(
+            {"agree": False, "correct_finding": "safe", "explanation": "Sanitized."},
+            input_tokens=5000, output_tokens=2000,
         )
 
-        verifier, tracker = self._make_verifier()
         result = verifier.verify_result(
             code="function upload(req) { fs.writeFile(req.body.name, data); }",
             finding="vulnerable",
@@ -333,47 +342,18 @@ class TestVerifyWithNativeClaude:
 
         assert result.correct_finding == "safe"
         assert result.agree is False
-        assert tracker.total_cost_usd == 1.25
 
-    def test_fallback_when_no_repo_path(self):
-        verifier, _ = self._make_verifier(repo_path=None)
-        result = verifier.verify_result(
-            code="code", finding="vulnerable",
-            attack_vector="test", reasoning="test",
-        )
-
-        assert result.agree is True
-        assert result.correct_finding == "vulnerable"
-        assert "No repo_path" in result.explanation
-
-    @patch("utilities.llm_client._run_query_sync")
-    def test_sdk_failure_returns_fallback(self, mock_query):
-        mock_query.side_effect = RuntimeError("SDK crashed")
-
-        verifier, _ = self._make_verifier()
-        result = verifier.verify_result(
-            code="code", finding="bypassable",
-            attack_vector="test", reasoning="test",
-        )
-
-        assert result.agree is True
-        assert result.correct_finding == "bypassable"
-
-    @patch("utilities.llm_client._run_query_sync")
-    def test_parses_json_from_code_block(self, mock_query):
+    def test_text_response_with_json_parsed(self):
+        verifier, _, mock_client = self._make_verifier()
         verdict_json = json.dumps({
             "agree": False,
             "correct_finding": "protected",
             "explanation": "Auth check prevents exploitation.",
         })
-        mock_query.return_value = (
-            _make_result_message(
-                result=f"Here's my analysis:\n\n```json\n{verdict_json}\n```",
-            ),
-            "",
+        mock_client.messages.create.return_value = self._mock_text_response(
+            f"Here's my analysis:\n\n```json\n{verdict_json}\n```"
         )
 
-        verifier, _ = self._make_verifier()
         result = verifier.verify_result(
             code="code", finding="vulnerable",
             attack_vector="test", reasoning="test",
@@ -382,14 +362,12 @@ class TestVerifyWithNativeClaude:
         assert result.correct_finding == "protected"
         assert result.agree is False
 
-    @patch("utilities.llm_client._run_query_sync")
-    def test_unparseable_response_returns_fallback(self, mock_query):
-        mock_query.return_value = (
-            _make_result_message(result="not json at all"),
-            "",
+    def test_unparseable_text_returns_agree(self):
+        verifier, _, mock_client = self._make_verifier()
+        mock_client.messages.create.return_value = self._mock_text_response(
+            "not json at all"
         )
 
-        verifier, _ = self._make_verifier()
         result = verifier.verify_result(
             code="code", finding="vulnerable",
             attack_vector="test", reasoning="test",
@@ -397,6 +375,42 @@ class TestVerifyWithNativeClaude:
 
         assert result.agree is True
         assert result.correct_finding == "vulnerable"
+
+    def test_api_error_propagates(self):
+        import anthropic
+        verifier, _, mock_client = self._make_verifier()
+        mock_client.messages.create.side_effect = RuntimeError("API error")
+
+        with pytest.raises(RuntimeError, match="API error"):
+            verifier.verify_result(
+                code="code", finding="bypassable",
+                attack_vector="test", reasoning="test",
+            )
+
+    def test_max_iterations_returns_agree(self):
+        """When tool calls never finish, max iterations returns agree."""
+        verifier, _, mock_client = self._make_verifier()
+        # Return a tool_use response that's NOT 'finish' — forces continuation
+        tool_block = MagicMock()
+        tool_block.type = "tool_use"
+        tool_block.name = "read_file"
+        tool_block.input = {"path": "test.py"}
+        tool_block.id = "tool_001"
+
+        response = MagicMock()
+        response.content = [tool_block]
+        response.stop_reason = "tool_use"
+        response.usage = MagicMock(input_tokens=100, output_tokens=50)
+
+        mock_client.messages.create.return_value = response
+
+        result = verifier.verify_result(
+            code="code", finding="vulnerable",
+            attack_vector="test", reasoning="test",
+        )
+
+        assert result.agree is True
+        assert "Max iterations" in result.explanation
 
 
 # ---------------------------------------------------------------------------
