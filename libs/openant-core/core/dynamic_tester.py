@@ -49,9 +49,6 @@ def run_tests(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    # Reset tracking
-    tracking.reset_tracking()
-
     # Check how many findings to test
     pipeline_data = read_json(pipeline_output_path)
 

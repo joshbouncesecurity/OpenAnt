@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/knostic/open-ant-cli/internal/checkpoint"
 	"github.com/knostic/open-ant-cli/internal/output"
 	"github.com/knostic/open-ant-cli/internal/python"
 	"github.com/spf13/cobra"
@@ -38,8 +39,8 @@ var (
 	scanDynamicTest bool
 	scanLimit       int
 	scanModel       string
-	scanFresh       bool
-	scanConcurrency int
+	scanWorkers     int
+	scanBackoff     int
 )
 
 func init() {
@@ -54,16 +55,11 @@ func init() {
 	scanCmd.Flags().BoolVar(&scanDynamicTest, "dynamic-test", false, "Enable Docker-isolated dynamic testing (off by default)")
 	scanCmd.Flags().IntVar(&scanLimit, "limit", 0, "Max units to analyze (0 = no limit)")
 	scanCmd.Flags().StringVar(&scanModel, "model", "opus", "Model: opus or sonnet")
-	scanCmd.Flags().BoolVar(&scanFresh, "fresh", false, "Ignore previous progress and rerun all steps from scratch")
-	scanCmd.Flags().IntVarP(&scanConcurrency, "concurrency", "j", 4, "Number of concurrent LLM calls (default: 4)")
+	scanCmd.Flags().IntVar(&scanWorkers, "workers", 8, "Number of parallel workers for LLM steps (default: 8)")
+	scanCmd.Flags().IntVar(&scanBackoff, "backoff", 30, "Seconds to wait when rate-limited (default: 30)")
 }
 
 func runScan(cmd *cobra.Command, args []string) {
-	if scanConcurrency < 1 {
-		fmt.Fprintln(os.Stderr, "Error: --concurrency must be >= 1")
-		os.Exit(1)
-	}
-
 	repoPath, ctx, err := resolveRepoArg(args)
 	if err != nil {
 		output.PrintError(err.Error())
@@ -87,6 +83,20 @@ func runScan(cmd *cobra.Command, args []string) {
 	if err != nil {
 		output.PrintError(err.Error())
 		os.Exit(2)
+	}
+
+	// Check for interrupted runs in the scan directory
+	if ctx != nil && scanOutput != "" {
+		steps := []string{"enhance", "analyze", "verify"}
+		for _, step := range steps {
+			if cpInfo := checkpoint.DetectViaPython(rt.Path, scanOutput, step); cpInfo != nil {
+				if !checkpoint.PromptResume(cpInfo, step, quiet) {
+					_ = checkpoint.Clean(cpInfo.Dir)
+				}
+				// Note: Python side auto-detects and uses the checkpoint dir,
+				// so we only need to clean if the user wants a fresh start.
+			}
+		}
 	}
 
 	// Build Python CLI args
@@ -124,10 +134,12 @@ func runScan(cmd *cobra.Command, args []string) {
 	if scanModel != "opus" {
 		pyArgs = append(pyArgs, "--model", scanModel)
 	}
-	if scanFresh {
-		pyArgs = append(pyArgs, "--fresh")
+	if scanWorkers != 8 {
+		pyArgs = append(pyArgs, "--workers", fmt.Sprintf("%d", scanWorkers))
 	}
-	pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", scanConcurrency))
+	if scanBackoff != 30 {
+		pyArgs = append(pyArgs, "--backoff", fmt.Sprintf("%d", scanBackoff))
+	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())
 	if err != nil {
@@ -135,7 +147,9 @@ func runScan(cmd *cobra.Command, args []string) {
 		os.Exit(2)
 	}
 
-	if jsonOutput {
+	if result.Envelope.Status == "interrupted" {
+		os.Exit(130)
+	} else if jsonOutput {
 		output.PrintJSON(result.Envelope)
 	} else if result.Envelope.Status == "success" {
 		if data, ok := result.Envelope.Data.(map[string]any); ok {

@@ -32,13 +32,17 @@ import json
 import logging
 import os
 import re
+import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .file_io import read_json
-from .llm_client import TokenTracker, get_global_tracker, run_native_verification, AnthropicClient
-from .parallel_executor import run_parallel
+import anthropic
+
+from .llm_client import TokenTracker, get_global_tracker
+from .rate_limiter import get_rate_limiter
 
 # Null logger that discards all messages (used when no logger provided)
 _null_logger = logging.getLogger("null_verifier")
@@ -147,16 +151,16 @@ class FindingVerifier:
         verbose: bool = False,
         app_context: "ApplicationContext" = None,
         logger: logging.Logger = None,
-        output_dir: str = None,
+        client: "anthropic.Anthropic | None" = None,
     ):
         self.index = index
         self.tracker = tracker or get_global_tracker()
         self.verbose = verbose
         self.app_context = app_context
-        self.client = AnthropicClient(model=VERIFIER_MODEL, tracker=self.tracker)
+        self.tool_executor = ToolExecutor(index)
+        self.client = client or anthropic.Anthropic(max_retries=5)
         self.logger = logger or _null_logger
         self._use_logger = logger is not None
-        self.output_dir = output_dir
 
     def _save_explanation(self, route_key: str, verification: "VerificationResult"):
         """Save verification explanation to a file in the output directory."""
@@ -269,16 +273,23 @@ class FindingVerifier:
         """
         # run_native_verification imported at module level from .llm_client
 
-        repo_path = str(self.index.repo_path) if self.index.repo_path else None
-        if not repo_path:
-            self._log("warning", "No repo_path available for native Claude Code mode")
-            return VerificationResult(
-                agree=True,
-                correct_finding=finding,
-                explanation="No repo_path available for native Claude Code verification",
-                iterations=0,
-                total_tokens=0,
-            )
+            # Wait if we're in a global backoff period
+            rate_limiter = get_rate_limiter()
+            rate_limiter.wait_if_needed()
+
+            try:
+                response = self.client.messages.create(
+                    model=VERIFIER_MODEL,
+                    max_tokens=MAX_TOKENS_PER_RESPONSE,
+                    system=system_prompt,
+                    tools=VERIFICATION_TOOLS,
+                    messages=messages
+                )
+            except anthropic.RateLimitError as exc:
+                # Report to global rate limiter so all workers back off
+                retry_after = float(exc.response.headers.get("retry-after", 0))
+                get_rate_limiter().report_rate_limit(retry_after)
+                raise
 
         user_prompt = get_native_claude_verification_prompt(
             code=code,
@@ -360,72 +371,162 @@ class FindingVerifier:
         results: list,
         code_by_route: dict,
         progress_callback: Optional[Callable] = None,
-        checkpoint_path: str | None = None,
-        concurrency: int = 4,
+        workers: int = 10,
+        checkpoint=None,
+        restored_callback: Optional[Callable] = None,
     ) -> list:
         """
         Verify a batch of results with consistency cross-check.
+
+        Uses ThreadPoolExecutor for parallel verification when workers > 1.
+        Supports checkpoint/resume via the checkpoint parameter.
 
         Args:
             results: List of Stage 1 results to verify
             code_by_route: Dict mapping route_key to code
             progress_callback: Optional callback(unit_id, detail, unit_elapsed)
                 called after each finding is verified.
-            checkpoint_path: Path to save/resume checkpoint. When provided,
-                previously verified findings are restored and skipped.
+            workers: Number of parallel workers (default: 10).
+            checkpoint: Optional StepCheckpoint instance for resume support.
+            restored_callback: Optional callback(count) called after checkpoint
+                loading with the number of restored units.
 
         Returns:
             Updated results with verification and consistency check
         """
-        # Load checkpoint if resuming
-        completed_keys = set()
-        if checkpoint_path and os.path.exists(checkpoint_path):
-            try:
-                cp = read_json(checkpoint_path)
-                completed_keys = set(cp.get("completed_keys", []))
-                # Restore verification data from checkpoint into results
-                cp_by_key = {r["route_key"]: r for r in cp.get("verified", [])}
-                for result in results:
-                    key = result.get("route_key", "unknown")
-                    if key in cp_by_key:
-                        result["verification"] = cp_by_key[key]["verification"]
-                        if "finding" in cp_by_key[key]:
-                            result["finding"] = cp_by_key[key]["finding"]
-                        if "verification_note" in cp_by_key[key]:
-                            result["verification_note"] = cp_by_key[key]["verification_note"]
-                # Restore cost accumulator from checkpoint
-                cp_token_usage = cp.get("token_usage")
-                if cp_token_usage:
-                    self.tracker.restore_from(cp_token_usage)
+        total = len(results)
 
-                print(f"[Verify] Resuming: {len(completed_keys)} findings already verified",
-                      file=__import__('sys').stderr)
-            except (json.JSONDecodeError, OSError):
-                # Corrupt checkpoint — start fresh
-                print("[Verify] Corrupt checkpoint, starting fresh",
-                      file=__import__('sys').stderr)
-                completed_keys = set()
+        # Load checkpoint state
+        checkpointed = {}
+        if checkpoint is not None:
+            checkpointed = checkpoint.load()
 
-        # Step 1: Individual verification
-        # Report resumed findings
-        pending_results = []
-        for result in results:
-            route_key = result.get("route_key", "unknown")
-            if route_key in completed_keys:
-                if progress_callback:
-                    progress_callback(route_key, "(resumed)", 0.0)
+        def _cp_is_error(cp_data):
+            """A verify checkpoint is errored if verification is missing/empty
+            or correct_finding == 'error'."""
+            if not cp_data:
+                return True
+            v = cp_data.get("verification", {})
+            if not v:
+                return True
+            return v.get("correct_finding") == "error"
+
+        # Separate already-done (successful) from to-do (new + errored)
+        results_to_verify = []
+        _restored_ok = 0
+        for r in results:
+            key = r.get("unit_id") or r.get("route_key", "unknown")
+            cp_data = checkpointed.get(key)
+            if cp_data and not _cp_is_error(cp_data):
+                # Restore verification data from checkpoint
+                if "verification" in cp_data:
+                    r["verification"] = cp_data["verification"]
+                if "finding" in cp_data:
+                    r["finding"] = cp_data["finding"]
+                if "verification_note" in cp_data:
+                    r["verification_note"] = cp_data["verification_note"]
+                _restored_ok += 1
             else:
-                pending_results.append(result)
+                # Either no checkpoint, or an errored one — re-verify
+                results_to_verify.append(r)
 
-        self._log("info", f"Verifying {len(pending_results)} findings (concurrency={concurrency})")
+        if _restored_ok:
+            print(f"[Verify] Restored {_restored_ok} findings from checkpoints",
+                  file=sys.stderr, flush=True)
+            if restored_callback:
+                restored_callback(_restored_ok)
+        errored_retries = len(checkpointed) - _restored_ok
+        if errored_retries:
+            print(f"[Verify] Retrying {errored_retries} previously errored findings",
+                  file=sys.stderr, flush=True)
 
-        def _verify_one(result):
-            """Verify a single finding (called from worker thread)."""
-            start = time.monotonic()
-            route_key = result.get("route_key", "unknown")
-            stage1_finding = result.get("finding", "inconclusive")
-            print(f"[Verify] Starting: {route_key} ({stage1_finding})",
-                  file=__import__('sys').stderr, flush=True)
+        # Initialize summary tracking for _summary.json
+        _summary_completed = _restored_ok
+        _summary_errors = 0
+        _summary_error_breakdown = {}
+        _summary_input_tokens = 0
+        _summary_output_tokens = 0
+        _summary_cost_usd = 0.0
+
+        # Sum usage from ALL existing checkpoints (including errored ones
+        # — their cost was already spent in a prior run)
+        for _key, _cp in checkpointed.items():
+            _cp_usage = _cp.get("usage", {})
+            _summary_input_tokens += _cp_usage.get("input_tokens", 0)
+            _summary_output_tokens += _cp_usage.get("output_tokens", 0)
+            _summary_cost_usd += _cp_usage.get("cost_usd", 0.0)
+
+        def _usage_dict():
+            return {"input_tokens": _summary_input_tokens,
+                    "output_tokens": _summary_output_tokens,
+                    "cost_usd": round(_summary_cost_usd, 6)}
+
+        # Inject prior usage into tracker so step_report captures the total
+        if _summary_input_tokens or _summary_output_tokens:
+            self.tracker.add_prior_usage(
+                _summary_input_tokens, _summary_output_tokens, _summary_cost_usd)
+
+        if checkpoint is not None:
+            checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                                     _summary_error_breakdown, phase="in_progress",
+                                     usage=_usage_dict())
+
+        def _summary_callback(detail, usage=None):
+            """Update summary counters after each unit. Called from main thread."""
+            nonlocal _summary_completed, _summary_errors, _summary_error_breakdown
+            nonlocal _summary_input_tokens, _summary_output_tokens, _summary_cost_usd
+            if detail == "error":
+                _summary_errors += 1
+                _summary_error_breakdown["api"] = _summary_error_breakdown.get("api", 0) + 1
+            else:
+                _summary_completed += 1
+            if usage:
+                _summary_input_tokens += usage.get("input_tokens", 0)
+                _summary_output_tokens += usage.get("output_tokens", 0)
+                _summary_cost_usd += usage.get("cost_usd", 0.0)
+            if checkpoint is not None:
+                checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                                         _summary_error_breakdown, phase="in_progress",
+                                         usage=_usage_dict())
+
+        remaining = len(results_to_verify)
+        mode = "sequential" if workers <= 1 else f"parallel ({workers} workers)"
+        print(f"[Verify] Mode: {mode}, {remaining} findings to verify "
+              f"({len(checkpointed)} already done)", file=sys.stderr, flush=True)
+
+        if workers <= 1:
+            self._verify_batch_sequential(
+                results_to_verify, code_by_route, progress_callback, checkpoint,
+                summary_callback=_summary_callback)
+        else:
+            self._verify_batch_parallel(
+                results_to_verify, code_by_route, progress_callback, workers, checkpoint,
+                summary_callback=_summary_callback)
+
+        # Write final summary with phase="done"
+        if checkpoint is not None:
+            checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                                     _summary_error_breakdown, phase="done",
+                                     usage=_usage_dict())
+
+        # Step 2: Consistency cross-check (barrier — needs all results)
+        results = self._check_consistency(results, code_by_route)
+
+        return results
+
+    def _verify_one(self, result, code_by_route):
+        """Verify a single result. Returns (route_key, detail, elapsed, worker, usage).
+
+        Mutates the result dict in-place (each result is unique, no contention).
+        """
+        route_key = result.get("route_key", "unknown")
+        stage1_finding = result.get("finding", "inconclusive")
+        worker = threading.current_thread().name
+
+        self.tracker.start_unit_tracking()
+        unit_start = time.monotonic()
+        detail = ""
+        try:
             code = code_by_route.get(route_key, "")
             verification = self.verify_result(
                 code=code,
@@ -434,13 +535,6 @@ class FindingVerifier:
                 reasoning=result.get("reasoning", ""),
                 files_included=result.get("files_included", [])
             )
-            return (verification, time.monotonic() - start)
-
-        def _on_complete(result, verify_output):
-            """Called under lock after successful verification."""
-            verification, unit_elapsed = verify_output
-            route_key = result.get("route_key", "unknown")
-            stage1_finding = result.get("finding", "inconclusive")
 
             result["verification"] = verification.to_dict()
 
@@ -457,49 +551,78 @@ class FindingVerifier:
                           unit_id=route_key, total_tokens=verification.total_tokens,
                           iterations=verification.iterations)
 
-            # Print full Claude Code analysis when verbose mode is enabled
-            if self.verbose and verification.explanation:
-                print(f"\n{'='*60}\n[Verify] {route_key} -> {verification.correct_finding}\n{'='*60}\n{verification.explanation}\n{'='*60}\n",
-                      file=__import__('sys').stderr, flush=True)
+        except Exception as e:
+            detail = "error"
+            print(f"[Verify] ERROR {route_key}: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
-            # Save explanation to file
-            if self.output_dir and verification.explanation:
-                self._save_explanation(route_key, verification)
+        unit_elapsed = time.monotonic() - unit_start
+        usage = self.tracker.get_unit_usage()
+        return route_key, detail, unit_elapsed, worker, usage
 
-            if checkpoint_path:
-                completed_keys.add(route_key)
-                _save_verify_checkpoint(checkpoint_path, results, completed_keys, self.tracker)
-            if progress_callback:
-                progress_callback(route_key, detail, unit_elapsed)
+    def _verify_batch_sequential(self, results, code_by_route, progress_callback,
+                                 checkpoint=None, summary_callback=None):
+        """Verify all results sequentially."""
+        try:
+            for i, result in enumerate(results):
+                route_key = result.get("route_key", "unknown")
+                stage1_finding = result.get("finding", "inconclusive")
+                self._log("info", f"Verifying finding {i+1}/{len(results)}",
+                          unit_id=route_key, classification=stage1_finding)
 
-        def _on_error(result, exc):
-            """Called under lock when verification raises."""
-            route_key = result.get("route_key", "unknown")
-            self._log("error", f"Verification failed", unit_id=route_key, error=str(exc))
-            # Do NOT add to completed_keys — errored findings will be
-            # retried on resume (matching analyze/enhance behavior).
-            # We intentionally skip checkpoint save here: the last successful
-            # _on_complete already persisted all completed work. If the process
-            # dies after this error, the errored finding is simply reprocessed.
-            if progress_callback:
-                progress_callback(route_key, "error", 0.0)
+                route_key, detail, unit_elapsed, _worker, usage = self._verify_one(result, code_by_route)
+                if checkpoint is not None:
+                    key = result.get("unit_id") or route_key
+                    cp_data = {
+                        "verification": result.get("verification", {}),
+                        "finding": result.get("finding", ""),
+                        "verification_note": result.get("verification_note", ""),
+                    }
+                    if usage:
+                        cp_data["usage"] = usage
+                    checkpoint.save(key, cp_data)
+                if summary_callback:
+                    summary_callback(detail, usage=usage)
+                if progress_callback:
+                    progress_callback(route_key, detail, unit_elapsed)
+        except KeyboardInterrupt:
+            print("[Verify] Interrupted — progress saved to checkpoints",
+                  file=sys.stderr, flush=True)
 
-        run_parallel(
-            items=pending_results,
-            process_fn=_verify_one,
-            concurrency=concurrency,
-            on_complete=_on_complete,
-            on_error=_on_error,
-        )
+    def _verify_batch_parallel(self, results, code_by_route, progress_callback, workers,
+                                checkpoint=None, summary_callback=None):
+        """Verify all results in parallel using ThreadPoolExecutor."""
+        executor = ThreadPoolExecutor(max_workers=workers)
+        future_to_result = {}
+        for result in results:
+            future = executor.submit(self._verify_one, result, code_by_route)
+            future_to_result[future] = result
 
-        # Step 2: Consistency cross-check runs on ALL results (including resumed ones)
-        results = self._check_consistency(results, code_by_route)
-
-        # Clean up checkpoint on success
-        if checkpoint_path and os.path.exists(checkpoint_path):
-            os.remove(checkpoint_path)
-
-        return results
+        try:
+            for future in as_completed(future_to_result):
+                result = future_to_result[future]
+                route_key, detail, unit_elapsed, worker, usage = future.result()
+                if checkpoint is not None:
+                    key = result.get("unit_id") or route_key
+                    cp_data = {
+                        "verification": result.get("verification", {}),
+                        "finding": result.get("finding", ""),
+                        "verification_note": result.get("verification_note", ""),
+                    }
+                    if usage:
+                        cp_data["usage"] = usage
+                    checkpoint.save(key, cp_data)
+                if summary_callback:
+                    summary_callback(detail, usage=usage)
+                if progress_callback:
+                    progress_callback(route_key, f"{detail}  [{worker}]", unit_elapsed)
+        except KeyboardInterrupt:
+            print("[Verify] Interrupted — cancelling pending work...",
+                  file=sys.stderr, flush=True)
+            executor.shutdown(wait=False, cancel_futures=True)
+            print("[Verify] Progress saved to checkpoints",
+                  file=sys.stderr, flush=True)
+            return
+        executor.shutdown(wait=False)
 
     def _check_consistency(
         self,
@@ -647,6 +770,10 @@ class FindingVerifier:
         prompt = get_consistency_check_prompt(group, code_by_route)
 
         try:
+            # Wait if we're in a global backoff period
+            rate_limiter = get_rate_limiter()
+            rate_limiter.wait_if_needed()
+
             response = self.client.messages.create(
                 model=VERIFIER_MODEL,
                 max_tokens=MAX_TOKENS_PER_RESPONSE,
@@ -673,6 +800,11 @@ class FindingVerifier:
                     explanation=result.get("explanation", "")
                 )
 
+        except anthropic.RateLimitError as e:
+            # Report to global rate limiter so all workers back off
+            retry_after = float(e.response.headers.get("retry-after", 0))
+            get_rate_limiter().report_rate_limit(retry_after)
+            self._log("error", f"Consistency resolution rate limited", error=str(e))
         except Exception as e:
             self._log("error", f"Consistency resolution failed", error=str(e))
 

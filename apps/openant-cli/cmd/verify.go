@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/knostic/open-ant-cli/internal/checkpoint"
 	"github.com/knostic/open-ant-cli/internal/output"
 	"github.com/knostic/open-ant-cli/internal/python"
 	"github.com/spf13/cobra"
@@ -30,8 +31,9 @@ var (
 	verifyAnalyzerOutput string
 	verifyAppContext     string
 	verifyRepoPath       string
-	verifyFresh          bool
-	verifyConcurrency    int
+	verifyWorkers        int
+	verifyCheckpoint     string
+	verifyBackoff        int
 )
 
 func init() {
@@ -39,16 +41,12 @@ func init() {
 	verifyCmd.Flags().StringVar(&verifyAnalyzerOutput, "analyzer-output", "", "Path to analyzer_output.json")
 	verifyCmd.Flags().StringVar(&verifyAppContext, "app-context", "", "Path to application_context.json")
 	verifyCmd.Flags().StringVar(&verifyRepoPath, "repo-path", "", "Path to the repository")
-	verifyCmd.Flags().BoolVar(&verifyFresh, "fresh", false, "Ignore checkpoint and reverify all findings from scratch")
-	verifyCmd.Flags().IntVarP(&verifyConcurrency, "concurrency", "j", 4, "Number of concurrent LLM calls (default: 4)")
+	verifyCmd.Flags().IntVar(&verifyWorkers, "workers", 8, "Number of parallel workers for LLM steps (default: 8)")
+	verifyCmd.Flags().StringVar(&verifyCheckpoint, "checkpoint", "", "Path to checkpoint directory for save/resume")
+	verifyCmd.Flags().IntVar(&verifyBackoff, "backoff", 30, "Seconds to wait when rate-limited (default: 30)")
 }
 
 func runVerify(cmd *cobra.Command, args []string) {
-	if verifyConcurrency < 1 {
-		fmt.Fprintln(os.Stderr, "Error: --concurrency must be >= 1")
-		os.Exit(1)
-	}
-
 	resultsPath, ctx, err := resolveFileArg(args, "results.json")
 	if err != nil {
 		output.PrintError(err.Error())
@@ -62,9 +60,6 @@ func runVerify(cmd *cobra.Command, args []string) {
 		}
 		if verifyAnalyzerOutput == "" {
 			verifyAnalyzerOutput = ctx.scanFile("analyzer_output.json")
-		}
-		if verifyAppContext == "" {
-			verifyAppContext = ctx.scanFile("application_context.json")
 		}
 		if verifyRepoPath == "" {
 			verifyRepoPath = ctx.RepoPath
@@ -81,6 +76,17 @@ func runVerify(cmd *cobra.Command, args []string) {
 		os.Exit(2)
 	}
 
+	// Auto-detect checkpoints from a previous interrupted run
+	if verifyCheckpoint == "" && ctx != nil {
+		if cpInfo := checkpoint.DetectViaPython(rt.Path, ctx.ScanDir, "verify"); cpInfo != nil {
+			if checkpoint.PromptResume(cpInfo, "verify", quiet) {
+				verifyCheckpoint = cpInfo.Dir
+			} else {
+				_ = checkpoint.Clean(cpInfo.Dir)
+			}
+		}
+	}
+
 	pyArgs := []string{"verify", resultsPath, "--analyzer-output", verifyAnalyzerOutput}
 	if verifyOutput != "" {
 		pyArgs = append(pyArgs, "--output", verifyOutput)
@@ -91,10 +97,15 @@ func runVerify(cmd *cobra.Command, args []string) {
 	if verifyRepoPath != "" {
 		pyArgs = append(pyArgs, "--repo-path", verifyRepoPath)
 	}
-	if verifyFresh {
-		pyArgs = append(pyArgs, "--fresh")
+	if verifyWorkers != 8 {
+		pyArgs = append(pyArgs, "--workers", fmt.Sprintf("%d", verifyWorkers))
 	}
-	pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", verifyConcurrency))
+	if verifyCheckpoint != "" {
+		pyArgs = append(pyArgs, "--checkpoint", verifyCheckpoint)
+	}
+	if verifyBackoff != 30 {
+		pyArgs = append(pyArgs, "--backoff", fmt.Sprintf("%d", verifyBackoff))
+	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())
 	if err != nil {
@@ -102,7 +113,9 @@ func runVerify(cmd *cobra.Command, args []string) {
 		os.Exit(2)
 	}
 
-	if jsonOutput {
+	if result.Envelope.Status == "interrupted" {
+		os.Exit(130)
+	} else if jsonOutput {
 		output.PrintJSON(result.Envelope)
 	} else if result.Envelope.Status == "success" {
 		if data, ok := result.Envelope.Data.(map[string]any); ok {

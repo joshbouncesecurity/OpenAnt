@@ -61,6 +61,7 @@ class ProgressReporter:
         self.start_time = time.monotonic()
         self.completed = completed
         self._lock = threading.Lock()
+        self._last_cost = self._get_cost()  # snapshot for per-unit delta
 
         # Width for the counter so alignment stays consistent
         self._width = len(str(total))
@@ -107,35 +108,37 @@ class ProgressReporter:
             self.completed += 1
             elapsed = time.monotonic() - self.start_time
             eta = self._estimate_remaining(elapsed)
-            cost = self._get_cost()
+            total_cost = self._get_cost()
+            unit_cost = total_cost - self._last_cost
+            self._last_cost = total_cost
 
             # Truncate label if too long
             if len(unit_label) > 50:
                 unit_label = unit_label[:47] + "..."
 
-            # Build the progress line
+            # Build the progress line — show per-unit cost, not cumulative
             parts = [
                 f"[{self.step_name}]",
-                f"{self.completed:>{self._width}}/{self.total} done",
+                f"{self.completed:>{self._width}}/{self.total}",
                 unit_label,
-                f"-> {detail}" if detail else "",
             ]
-            parts = [p for p in parts if p]
+            if detail:
+                parts.append(detail)
             if unit_elapsed > 0:
-                parts.append(f"({unit_elapsed:.1f}s)")
+                parts.append(f"{unit_elapsed:.1f}s")
 
-            meta = f"(elapsed {_fmt_duration(elapsed)}, ETA {eta}, {_fmt_cost(cost)})"
+            meta = f"(elapsed {_fmt_duration(elapsed)}, ETA {eta}, {_fmt_cost(unit_cost)})"
             parts.append(meta)
 
             line = "  ".join(parts)
             print(line, file=sys.stderr, flush=True)
 
-            # Periodic summary
+            # Periodic summary — shows cumulative total
             if (
                 self.completed % self._summary_interval == 0
                 and self.completed < self.total
             ):
-                self._print_summary(elapsed, cost)
+                self._print_summary(elapsed, total_cost)
 
     def _print_summary(self, elapsed: float, cost: float) -> None:
         """Print a highlighted summary line."""
@@ -156,14 +159,15 @@ class ProgressReporter:
 
     def finish(self) -> None:
         """Print a final summary line when the step is done."""
-        elapsed = time.monotonic() - self.start_time
-        cost = self._get_cost()
-        avg = elapsed / self.completed if self.completed else 0
+        with self._lock:
+            elapsed = time.monotonic() - self.start_time
+            cost = self._get_cost()
+            avg = elapsed / self.completed if self.completed else 0
 
-        line = (
-            f"[{self.step_name}] Done: "
-            f"{self.completed}/{self.total} units in {_fmt_duration(elapsed)} | "
-            f"avg {avg:.1f}s/unit | "
-            f"cost {_fmt_cost(cost)}"
-        )
-        print(line, file=sys.stderr, flush=True)
+            line = (
+                f"[{self.step_name}] Done: "
+                f"{self.completed}/{self.total} units in {_fmt_duration(elapsed)} | "
+                f"avg {avg:.1f}s/unit | "
+                f"cost {_fmt_cost(cost)}"
+            )
+            print(line, file=sys.stderr, flush=True)

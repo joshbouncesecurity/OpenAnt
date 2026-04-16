@@ -3,8 +3,8 @@ All-in-one scanner orchestrator.
 
 Runs the full pipeline:
 
-    Parse -> App Context -> Enhance -> Detect -> Verify
-        -> Build pipeline_output -> Report -> Dynamic Test
+    Parse → App Context → Enhance → Detect → Verify
+        → Build pipeline_output → Dynamic Test → Report
 
 This is the implementation behind ``open-ant scan <path>``.
 
@@ -16,7 +16,7 @@ Each step:
 On completion, a final ``scan.report.json`` aggregates all step reports.
 
 Resume is always active: completed steps are skipped based on their
-step reports. Use ``--fresh`` to force a full rerun.
+step reports.
 """
 
 import json
@@ -155,25 +155,21 @@ def scan_repository(
     enhance: bool = True,
     enhance_mode: str = "agentic",
     dynamic_test: bool = False,
-    fresh: bool = False,
-    concurrency: int = 4,
+    workers: int = 8,
+    backoff_seconds: int = 30,
 ) -> ScanResult:
     """Scan a repository for vulnerabilities.
 
     Orchestrates the full OpenAnt pipeline:
 
     1. **Parse** repository into a dataset
-    2. **App Context** -- generate application context (optional)
-    3. **Enhance** -- add security context via agentic/single-shot LLM (optional)
-    4. **Detect** -- Stage 1 vulnerability detection
-    5. **Verify** -- Stage 2 attacker simulation (optional)
-    6. **Build pipeline_output.json** -- bridge format for reports + dynamic tests
-    7. **Report** -- summary + disclosure documents (optional)
-    8. **Dynamic Test** -- Docker-isolated exploit testing (optional, off by default)
-
-    Resume is always active: completed steps are skipped based on their
-    step reports. Once any step re-executes, all subsequent steps also
-    re-execute (force-rerun cascade).
+    2. **App Context** — generate application context (optional)
+    3. **Enhance** — add security context via agentic/single-shot LLM (optional)
+    4. **Detect** — Stage 1 vulnerability detection
+    5. **Verify** — Stage 2 attacker simulation (optional)
+    6. **Build pipeline_output.json** — bridge format for reports + dynamic tests
+    7. **Dynamic Test** — Docker-isolated exploit testing (optional, off by default)
+    8. **Report** — summary + disclosure documents (optional, merges dynamic test results)
 
     Args:
         repo_path: Path to the repository to scan.
@@ -189,7 +185,8 @@ def scan_repository(
         enhance: If True, run agentic/single-shot context enhancement.
         enhance_mode: ``"agentic"`` (thorough) or ``"single-shot"`` (fast).
         dynamic_test: If True, run Docker-isolated dynamic testing (requires Docker).
-        fresh: If True, ignore all previous progress and rerun from scratch.
+        workers: Number of parallel workers for LLM steps (default: 8).
+        backoff_seconds: Seconds to wait when rate-limited (default: 30).
 
     Returns:
         ScanResult with paths to all generated files and metrics.
@@ -200,14 +197,6 @@ def scan_repository(
 
     # Reset tracking
     tracking.reset_tracking()
-
-    # If fresh, delete all checkpoint and dataset files up front
-    if fresh:
-        for cp_name in ["enhance_checkpoint.json", "analyze_checkpoint.json",
-                        "verify_checkpoint.json", "dataset.json"]:
-            cp_path = os.path.join(output_dir, cp_name)
-            if os.path.exists(cp_path):
-                os.remove(cp_path)
 
     result = ScanResult(output_dir=output_dir)
     collected_step_reports: list[dict] = []
@@ -226,13 +215,13 @@ def scan_repository(
 
     _print_banner(repo_path, output_dir, language, processing_level,
                   verify, generate_context, enhance, enhance_mode,
-                  generate_report, dynamic_test, fresh)
+                  generate_report, dynamic_test, workers, backoff_seconds)
 
     # ---------------------------------------------------------------
     # Step 1: Parse
     # ---------------------------------------------------------------
     prev = None
-    if not fresh and not force_rerun:
+    if not force_rerun:
         prev = _check_step_completed(output_dir, "parse")
 
     if prev:
@@ -294,7 +283,7 @@ def scan_repository(
     app_context_path = None
     if generate_context and HAS_APP_CONTEXT:
         prev = None
-        if not fresh and not force_rerun:
+        if not force_rerun:
             prev = _check_step_completed(output_dir, "app-context")
 
         if prev:
@@ -343,7 +332,7 @@ def scan_repository(
     # ---------------------------------------------------------------
     if enhance:
         prev = None
-        if not fresh and not force_rerun:
+        if not force_rerun:
             prev = _check_step_completed(output_dir, "enhance")
 
         if prev:
@@ -362,10 +351,9 @@ def scan_repository(
 
             from core.enhancer import enhance_dataset
 
-            print(_step_label("Enhancing dataset..."), file=sys.stderr)
-
             enhanced_path = os.path.join(output_dir, "dataset_enhanced.json")
-            checkpoint_path = os.path.join(output_dir, "enhance_checkpoint.json")
+
+            print(_step_label("Enhancing dataset..."), file=sys.stderr)
 
             with step_context("enhance", output_dir, inputs={
                 "dataset_path": active_dataset_path,
@@ -379,9 +367,9 @@ def scan_repository(
                     analyzer_output_path=parse_result.analyzer_output_path,
                     repo_path=repo_path,
                     mode=enhance_mode,
-                    checkpoint_path=checkpoint_path,
-                    fresh=fresh,
-                    concurrency=concurrency,
+                    workers=workers,
+                    backoff_seconds=backoff_seconds,
+                    # checkpoint_path auto-derived from output_path
                 )
 
                 ctx.summary = {
@@ -390,6 +378,8 @@ def scan_repository(
                     "classifications": enhance_result.classifications,
                     "mode": enhance_mode,
                 }
+                if enhance_result.error_summary:
+                    ctx.summary["error_summary"] = enhance_result.error_summary
                 ctx.outputs = {
                     "enhanced_dataset_path": enhance_result.enhanced_dataset_path,
                 }
@@ -400,6 +390,8 @@ def scan_repository(
 
             print(f"  Enhanced: {enhance_result.units_enhanced} units", file=sys.stderr)
             print(f"  Classifications: {enhance_result.classifications}", file=sys.stderr)
+            if enhance_result.error_summary:
+                print(f"  Errors: {enhance_result.error_count} ({enhance_result.error_summary})", file=sys.stderr)
     else:
         print(_step_label("Skipping enhancement (--no-enhance)."), file=sys.stderr)
         result.skipped_steps.append("enhance")
@@ -409,7 +401,7 @@ def scan_repository(
     # Step 4: Detect (Stage 1)
     # ---------------------------------------------------------------
     prev = None
-    if not fresh and not force_rerun:
+    if not force_rerun:
         prev = _check_step_completed(output_dir, "analyze")
 
     if prev:
@@ -440,7 +432,8 @@ def scan_repository(
                 repo_path=repo_path,
                 limit=limit,
                 model=model,
-                concurrency=concurrency,
+                workers=workers,
+                backoff_seconds=backoff_seconds,
             )
 
             ctx.summary = {
@@ -476,7 +469,7 @@ def scan_repository(
 
     if verify and has_findings:
         prev = None
-        if not fresh and not force_rerun:
+        if not force_rerun:
             prev = _check_step_completed(output_dir, "verify")
 
         if prev:
@@ -487,19 +480,6 @@ def scan_repository(
             collected_step_reports.append(prev)
             result.resumed_steps.append("verify")
 
-            # Update metrics from resumed verification
-            result.metrics = AnalysisMetrics(
-                total=analyze_result.metrics.total,
-                vulnerable=verify_result.confirmed_vulnerabilities,
-                bypassable=0,
-                inconclusive=analyze_result.metrics.inconclusive,
-                protected=analyze_result.metrics.protected,
-                safe=analyze_result.metrics.safe + verify_result.disagreed,
-                errors=analyze_result.metrics.errors,
-                verified=verify_result.findings_verified,
-                stage2_agreed=verify_result.agreed,
-                stage2_disagreed=verify_result.disagreed,
-            )
         else:
             force_rerun = True
             _clean_stale_files(output_dir, [
@@ -521,7 +501,8 @@ def scan_repository(
                     analyzer_output_path=parse_result.analyzer_output_path,
                     app_context_path=app_context_path,
                     repo_path=repo_path,
-                    concurrency=concurrency,
+                    workers=workers,
+                    backoff_seconds=backoff_seconds,
                 )
 
                 ctx.summary = {
@@ -569,7 +550,7 @@ def scan_repository(
     # Step 6: Build pipeline_output.json
     # ---------------------------------------------------------------
     prev = None
-    if not fresh and not force_rerun:
+    if not force_rerun:
         prev = _check_step_completed(output_dir, "build-output")
 
     if prev:
@@ -611,67 +592,7 @@ def scan_repository(
     print(file=sys.stderr)
 
     # ---------------------------------------------------------------
-    # Step 7: Report (optional)
-    # ---------------------------------------------------------------
-    if generate_report:
-        prev = None
-        if not fresh and not force_rerun:
-            prev = _check_step_completed(output_dir, "report")
-
-        if prev:
-            print(_step_label("Report (resumed)"), file=sys.stderr)
-            result.summary_path = prev.get("outputs", {}).get("summary_path")
-            collected_step_reports.append(prev)
-            result.resumed_steps.append("report")
-        else:
-            force_rerun = True
-            _clean_stale_files(output_dir, ["report.report.json"])
-
-            from core.reporter import generate_summary_report, generate_disclosure_docs
-
-            print(_step_label("Generating reports..."), file=sys.stderr)
-
-            with step_context("report", output_dir, inputs={
-                "pipeline_output_path": pipeline_output_path,
-            }) as ctx:
-                report_dir = os.path.join(output_dir, "report")
-                os.makedirs(report_dir, exist_ok=True)
-
-                summary_path = os.path.join(report_dir, "SUMMARY_REPORT.md")
-                disclosures_dir = os.path.join(report_dir, "disclosures")
-
-                outputs = {}
-
-                try:
-                    generate_summary_report(pipeline_output_path, summary_path)
-                    result.summary_path = summary_path
-                    outputs["summary_path"] = summary_path
-                    print(f"  Summary: {summary_path}", file=sys.stderr)
-                except Exception as e:
-                    print(f"  WARNING: Summary report failed: {e}", file=sys.stderr)
-                    ctx.errors.append(f"Summary report: {e}")
-
-                # Only generate disclosures if there are findings
-                if has_findings:
-                    try:
-                        generate_disclosure_docs(pipeline_output_path, disclosures_dir)
-                        outputs["disclosures_dir"] = disclosures_dir
-                        print(f"  Disclosures: {disclosures_dir}", file=sys.stderr)
-                    except Exception as e:
-                        print(f"  WARNING: Disclosure docs failed: {e}", file=sys.stderr)
-                        ctx.errors.append(f"Disclosure docs: {e}")
-
-                ctx.summary = {"formats_generated": list(outputs.keys())}
-                ctx.outputs = outputs
-
-            collected_step_reports.append(_load_step_report(output_dir, "report"))
-    else:
-        print(_step_label("Skipping report generation (--no-report)."), file=sys.stderr)
-        result.skipped_steps.append("report")
-    print(file=sys.stderr)
-
-    # ---------------------------------------------------------------
-    # Step 8: Dynamic Test (optional, off by default)
+    # Step 7: Dynamic Test (optional, off by default)
     # ---------------------------------------------------------------
     if dynamic_test and has_findings:
         if not shutil.which("docker"):
@@ -680,7 +601,7 @@ def scan_repository(
             result.skipped_steps.append("dynamic-test")
         else:
             prev = None
-            if not fresh and not force_rerun:
+            if not force_rerun:
                 prev = _check_step_completed(output_dir, "dynamic-test")
 
             if prev:
@@ -731,6 +652,53 @@ def scan_repository(
     else:
         print(_step_label("Skipping dynamic test (not enabled)."), file=sys.stderr)
         result.skipped_steps.append("dynamic-test")
+    print(file=sys.stderr)
+
+    # ---------------------------------------------------------------
+    # Step 8: Report (optional)
+    # ---------------------------------------------------------------
+    if generate_report:
+        from core.reporter import generate_summary_report, generate_disclosure_docs
+
+        print(_step_label("Generating reports..."), file=sys.stderr)
+
+        with step_context("report", output_dir, inputs={
+            "pipeline_output_path": pipeline_output_path,
+        }) as ctx:
+            report_dir = os.path.join(output_dir, "report")
+            os.makedirs(report_dir, exist_ok=True)
+
+            summary_path = os.path.join(report_dir, "SUMMARY_REPORT.md")
+            disclosures_dir = os.path.join(report_dir, "disclosures")
+
+            outputs = {}
+
+            try:
+                generate_summary_report(pipeline_output_path, summary_path)
+                result.summary_path = summary_path
+                outputs["summary_path"] = summary_path
+                print(f"  Summary: {summary_path}", file=sys.stderr)
+            except Exception as e:
+                print(f"  WARNING: Summary report failed: {e}", file=sys.stderr)
+                ctx.errors.append(f"Summary report: {e}")
+
+            # Only generate disclosures if there are findings
+            if has_findings:
+                try:
+                    generate_disclosure_docs(pipeline_output_path, disclosures_dir)
+                    outputs["disclosures_dir"] = disclosures_dir
+                    print(f"  Disclosures: {disclosures_dir}", file=sys.stderr)
+                except Exception as e:
+                    print(f"  WARNING: Disclosure docs failed: {e}", file=sys.stderr)
+                    ctx.errors.append(f"Disclosure docs: {e}")
+
+            ctx.summary = {"formats_generated": list(outputs.keys())}
+            ctx.outputs = outputs
+
+        collected_step_reports.append(_load_step_report(output_dir, "report"))
+    else:
+        print(_step_label("Skipping report generation (--no-report)."), file=sys.stderr)
+        result.skipped_steps.append("report")
     print(file=sys.stderr)
 
     # ---------------------------------------------------------------
@@ -849,7 +817,8 @@ def _print_banner(
     enhance_mode: str,
     generate_report: bool,
     dynamic_test: bool,
-    fresh: bool = False,
+    workers: int = 8,
+    backoff_seconds: int = 30,
 ) -> None:
     """Print the scan configuration banner."""
     print("=" * 60, file=sys.stderr)
@@ -864,8 +833,9 @@ def _print_banner(
     print(f"  App context:   {generate_context}", file=sys.stderr)
     print(f"  Report:        {generate_report}", file=sys.stderr)
     print(f"  Dynamic test:  {dynamic_test}", file=sys.stderr)
-    if fresh:
-        print(f"  Fresh:         True", file=sys.stderr)
+    workers_label = f"{workers} (parallel)" if workers > 1 else "1 (sequential)"
+    print(f"  Workers:       {workers_label}", file=sys.stderr)
+    print(f"  Rate backoff:  {backoff_seconds}s", file=sys.stderr)
     print("=" * 60, file=sys.stderr)
     print(file=sys.stderr)
 

@@ -32,6 +32,8 @@ from dotenv import load_dotenv
 # should mock os.environ or patch before importing this module.
 load_dotenv()
 
+from .rate_limiter import get_rate_limiter
+
 from .model_config import MODEL_PRIMARY, MODEL_AUXILIARY, MODEL_DEFAULT
 
 
@@ -243,6 +245,7 @@ class TokenTracker:
 
     def __init__(self):
         self._lock = threading.Lock()
+        self._thread_local = threading.local()
         self.reset()
 
     def reset(self):
@@ -299,16 +302,61 @@ class TokenTracker:
             "cost_usd": round(total_cost, 6)
         }
 
+        # Update totals (thread-safe)
         with self._lock:
             self.calls.append(call_record)
             self.total_input_tokens += input_tokens
             self.total_output_tokens += output_tokens
             self.total_cost_usd += total_cost
 
+        # Accumulate to thread-local unit tracking if active
+        tl = self._thread_local
+        if hasattr(tl, "unit_input"):
+            tl.unit_input += input_tokens
+            tl.unit_output += output_tokens
+            tl.unit_cost += total_cost
+
         return call_record
 
+    def add_prior_usage(self, input_tokens: int, output_tokens: int, cost_usd: float):
+        """Inject usage from a prior run (e.g. restored checkpoints).
+
+        This ensures step reports capture the total cost across all runs,
+        not just the current run's API calls.
+        """
+        with self._lock:
+            self.total_input_tokens += input_tokens
+            self.total_output_tokens += output_tokens
+            self.total_cost_usd += cost_usd
+
+    def start_unit_tracking(self):
+        """Start tracking usage for the current unit on this thread.
+
+        Call before processing a unit, then call ``get_unit_usage()``
+        after to get the accumulated usage for just that unit. Thread-safe
+        because each thread has its own ``threading.local()`` storage.
+        """
+        tl = self._thread_local
+        tl.unit_input = 0
+        tl.unit_output = 0
+        tl.unit_cost = 0.0
+
+    def get_unit_usage(self) -> dict:
+        """Return usage accumulated since ``start_unit_tracking()`` on this thread."""
+        tl = self._thread_local
+        return {
+            "input_tokens": getattr(tl, "unit_input", 0),
+            "output_tokens": getattr(tl, "unit_output", 0),
+            "cost_usd": round(getattr(tl, "unit_cost", 0.0), 6),
+        }
+
     def get_summary(self) -> dict:
-        """Get summary of all tracked calls."""
+        """
+        Get summary of all tracked calls.
+
+        Returns:
+            Dict with totals and per-call breakdown
+        """
         with self._lock:
             return {
                 "total_calls": len(self.calls),
@@ -316,18 +364,23 @@ class TokenTracker:
                 "total_output_tokens": self.total_output_tokens,
                 "total_tokens": self.total_input_tokens + self.total_output_tokens,
                 "total_cost_usd": round(self.total_cost_usd, 6),
-                "calls": list(self.calls)
+                "calls": list(self.calls),
             }
 
     def get_totals(self) -> dict:
-        """Get just the totals (without per-call breakdown)."""
+        """
+        Get just the totals (without per-call breakdown).
+
+        Returns:
+            Dict with totals only
+        """
         with self._lock:
             return {
                 "total_calls": len(self.calls),
                 "total_input_tokens": self.total_input_tokens,
                 "total_output_tokens": self.total_output_tokens,
                 "total_tokens": self.total_input_tokens + self.total_output_tokens,
-                "total_cost_usd": round(self.total_cost_usd, 6)
+                "total_cost_usd": round(self.total_cost_usd, 6),
             }
 
 
@@ -435,11 +488,31 @@ class AnthropicClient:
         return last_text
 
     async def analyze(self, prompt: str, max_tokens: int = 8192) -> str:
-        """Send a prompt to Claude and get a response."""
+        """
+        Send a prompt to Claude and get a response.
+
+        Args:
+            prompt: The prompt to send
+            max_tokens: Maximum tokens in response
+
+        Returns:
+            Response text from Claude
+        """
         return self._call(self.model, prompt, max_tokens=max_tokens)
 
     def analyze_sync(self, prompt: str, max_tokens: int = 8192, model: str = None, system: str = None) -> str:
-        """Synchronous version of analyze."""
+        """
+        Synchronous version of analyze.
+
+        Args:
+            prompt: The prompt to send
+            max_tokens: Maximum tokens in response
+            model: Optional model override (uses instance model if not specified)
+            system: Optional system prompt for context/instructions
+
+        Returns:
+            Response text from Claude
+        """
         return self._call(model or self.model, prompt, system=system, max_tokens=max_tokens)
 
     def get_last_call(self) -> Optional[dict]:

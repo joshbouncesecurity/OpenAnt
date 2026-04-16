@@ -23,8 +23,6 @@ import os
 import sys
 import tempfile
 
-from utilities.file_io import read_json
-
 
 def _output_json(data: dict):
     """Write JSON to stdout."""
@@ -32,37 +30,21 @@ def _output_json(data: dict):
     sys.stdout.write("\n")
 
 
-def _find_app_context(*candidate_dirs: str) -> str | None:
-    """Search candidate directories for application_context.json.
+def _load_step_reports(directory: str) -> list[dict]:
+    """Load all {step}.report.json files from a directory.
 
-    Returns the first existing path, or None.
+    Used by standalone commands (build-output, report) to feed
+    cost/duration data into pipeline_output.json.
     """
-    for d in candidate_dirs:
-        if not d:
+    import glob
+    reports = []
+    for path in glob.glob(os.path.join(directory, "*.report.json")):
+        try:
+            with open(path) as f:
+                reports.append(json.load(f))
+        except (json.JSONDecodeError, OSError):
             continue
-        path = os.path.join(d, "application_context.json")
-        if os.path.isfile(path):
-            return path
-    return None
-
-
-def _validate_concurrency(value: int) -> int:
-    """Validate and return concurrency value, warn if using local mode.
-
-    Raises ValueError (not ArgumentTypeError) so the caller's except
-    Exception handler produces a clean JSON error via _output_json().
-    """
-    if value < 1:
-        raise ValueError(f"--concurrency must be >= 1, got {value}")
-    if value > 1:
-        if os.getenv("OPENANT_LOCAL_CLAUDE", "").lower() == "true":
-            print(
-                f"[Warning] concurrency={value} with OPENANT_LOCAL_CLAUDE=true "
-                f"will spawn {value} simultaneous claude CLI processes. "
-                f"Use --concurrency 1 if this causes issues.",
-                file=sys.stderr,
-            )
-    return value
+    return reports
 
 
 def cmd_scan(args):
@@ -73,7 +55,6 @@ def cmd_scan(args):
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_")
 
     try:
-        concurrency = _validate_concurrency(args.concurrency)
         result = scan_repository(
             repo_path=args.repo,
             output_dir=output_dir,
@@ -88,8 +69,8 @@ def cmd_scan(args):
             enhance=not args.no_enhance,
             enhance_mode=args.enhance_mode,
             dynamic_test=args.dynamic_test,
-            fresh=args.fresh,
-            concurrency=concurrency,
+            workers=args.workers,
+            backoff_seconds=args.backoff,
         )
 
         _output_json(success(result.to_dict()))
@@ -212,6 +193,9 @@ def cmd_enhance(args):
     from core.enhancer import enhance_dataset
     from core.schemas import success, error
     from core.step_report import step_context
+    from core import tracking
+
+    tracking.reset_tracking()
 
     # Default output path: same dir as input, with _enhanced suffix
     if args.output:
@@ -223,7 +207,6 @@ def cmd_enhance(args):
     output_dir = os.path.dirname(os.path.abspath(output_path))
 
     try:
-        concurrency = _validate_concurrency(args.concurrency)
         with step_context("enhance", output_dir, inputs={
             "dataset_path": os.path.abspath(args.dataset),
             "analyzer_output_path": os.path.abspath(args.analyzer_output) if args.analyzer_output else None,
@@ -236,9 +219,9 @@ def cmd_enhance(args):
                 analyzer_output_path=args.analyzer_output,
                 repo_path=args.repo_path,
                 mode=args.mode,
-                fresh=args.fresh,
-                skip_errors=args.skip_errors,
-                concurrency=concurrency,
+                checkpoint_path=args.checkpoint,
+                workers=args.workers,
+                backoff_seconds=args.backoff,
             )
 
             ctx.summary = {
@@ -247,6 +230,8 @@ def cmd_enhance(args):
                 "classifications": result.classifications,
                 "mode": args.mode,
             }
+            if result.error_summary:
+                ctx.summary["error_summary"] = result.error_summary
             ctx.outputs = {
                 "enhanced_dataset_path": result.enhanced_dataset_path,
             }
@@ -268,41 +253,33 @@ def cmd_analyze(args):
     from core.analyzer import run_analysis
     from core.schemas import success, error
     from core.step_report import step_context
+    from core import tracking
+
+    tracking.reset_tracking()
 
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_analyze_")
 
-    # Auto-discover application context if not explicitly provided
-    app_context_path = args.app_context
-    if not app_context_path:
-        app_context_path = _find_app_context(
-            output_dir,
-            args.repo_path,
-            os.path.dirname(os.path.abspath(args.dataset)),
-        )
-        if app_context_path:
-            print(f"[Analyze] Auto-discovered application context: {app_context_path}",
-                  file=sys.stderr)
+    exploitable_filter = "all" if args.exploitable_all else ("strict" if args.exploitable_only else None)
 
     try:
-        concurrency = _validate_concurrency(args.concurrency)
         with step_context("analyze", output_dir, inputs={
             "dataset_path": os.path.abspath(args.dataset),
             "model": args.model,
-            "exploitable_only": args.exploitable_only,
+            "exploitable_filter": exploitable_filter,
             "limit": args.limit,
         }) as ctx:
             result = run_analysis(
                 dataset_path=args.dataset,
                 output_dir=output_dir,
                 analyzer_output_path=args.analyzer_output,
-                app_context_path=app_context_path,
+                app_context_path=args.app_context,
                 repo_path=args.repo_path,
                 limit=args.limit,
                 model=args.model,
-                exploitable_only=args.exploitable_only,
-                fresh=args.fresh,
-                skip_errors=args.skip_errors,
-                concurrency=concurrency,
+                exploitable_filter=exploitable_filter,
+                workers=args.workers,
+                checkpoint_path=getattr(args, "checkpoint", None),
+                backoff_seconds=args.backoff,
             )
 
             ctx.summary = {
@@ -336,10 +313,10 @@ def cmd_analyze(args):
                         results_path=result.results_path,
                         output_dir=output_dir,
                         analyzer_output_path=args.analyzer_output,
-                        app_context_path=app_context_path,
+                        app_context_path=args.app_context,
                         repo_path=args.repo_path,
-                        concurrency=concurrency,
-                        fresh=args.fresh,
+                        workers=args.workers,
+                        backoff_seconds=args.backoff,
                     )
 
                     vctx.summary = {
@@ -375,37 +352,28 @@ def cmd_verify(args):
     from core.verifier import run_verification
     from core.schemas import success, error
     from core.step_report import step_context
+    from core import tracking
+
+    tracking.reset_tracking()
 
     output_dir = args.output or tempfile.mkdtemp(prefix="open_ant_verify_")
 
-    # Auto-discover application context if not explicitly provided
-    app_context_path = args.app_context
-    if not app_context_path:
-        app_context_path = _find_app_context(
-            output_dir,
-            args.repo_path,
-            os.path.dirname(os.path.abspath(args.results)),
-        )
-        if app_context_path:
-            print(f"[Verify] Auto-discovered application context: {app_context_path}",
-                  file=sys.stderr)
-
     try:
-        concurrency = _validate_concurrency(args.concurrency)
         with step_context("verify", output_dir, inputs={
             "results_path": os.path.abspath(args.results),
             "analyzer_output_path": os.path.abspath(args.analyzer_output),
-            "app_context_path": os.path.abspath(app_context_path) if app_context_path else None,
+            "app_context_path": os.path.abspath(args.app_context) if args.app_context else None,
             "repo_path": os.path.abspath(args.repo_path) if args.repo_path else None,
         }) as ctx:
             result = run_verification(
                 results_path=args.results,
                 output_dir=output_dir,
                 analyzer_output_path=args.analyzer_output,
-                app_context_path=app_context_path,
+                app_context_path=args.app_context,
                 repo_path=args.repo_path,
-                fresh=args.fresh,
-                concurrency=concurrency,
+                workers=args.workers,
+                checkpoint_path=getattr(args, "checkpoint", None),
+                backoff_seconds=args.backoff,
             )
 
             ctx.summary = {
@@ -439,11 +407,15 @@ def cmd_build_output(args):
 
     output_dir = os.path.dirname(os.path.abspath(args.output))
 
+    # Load existing step reports for cost/duration data
+    results_dir = os.path.dirname(os.path.abspath(args.results))
+    step_reports = _load_step_reports(results_dir)
+
     try:
         with step_context("build-output", output_dir, inputs={
             "results_path": os.path.abspath(args.results),
         }) as ctx:
-            path = build_pipeline_output(
+            path, findings_count = build_pipeline_output(
                 results_path=args.results,
                 output_path=args.output,
                 repo_name=args.repo_name,
@@ -452,22 +424,12 @@ def cmd_build_output(args):
                 commit_sha=args.commit_sha,
                 application_type=args.app_type or "web_app",
                 processing_level=args.processing_level,
+                step_reports=step_reports,
             )
 
             ctx.outputs = {"pipeline_output_path": path}
 
-        # Read back the generated file to extract findings count
-        findings_count = 0
-        try:
-            pipeline_data = read_json(path)
-            findings_count = len(pipeline_data.get("findings", []))
-        except (OSError, json.JSONDecodeError):
-            pass
-
-        _output_json(success({
-            "pipeline_output_path": path,
-            "findings_count": findings_count,
-        }))
+        _output_json(success({"pipeline_output_path": path, "findings_count": findings_count}))
         return 0
 
     except Exception as e:
@@ -480,6 +442,9 @@ def cmd_dynamic_test(args):
     from core.dynamic_tester import run_tests
     from core.schemas import success, error
     from core.step_report import step_context
+    from core import tracking
+
+    tracking.reset_tracking()
 
     output_dir = args.output or tempfile.mkdtemp(prefix="openant_dyntest_")
 
@@ -518,6 +483,18 @@ def cmd_dynamic_test(args):
         return 2
 
 
+def _default_report_output(results_path: str, fmt: str) -> str:
+    """Derive a sensible default output path based on format."""
+    reports_dir = os.path.join(os.path.dirname(os.path.abspath(results_path)), "final-reports")
+    defaults = {
+        "html": os.path.join(reports_dir, "report.html"),
+        "csv": os.path.join(reports_dir, "report.csv"),
+        "summary": os.path.join(reports_dir, "report.md"),
+        "disclosure": os.path.join(reports_dir, "disclosures"),
+    }
+    return defaults.get(fmt, os.path.join(reports_dir, "report"))
+
+
 def cmd_report(args):
     """Generate reports from analysis results.
 
@@ -528,7 +505,6 @@ def cmd_report(args):
     """
     from core.reporter import (
         build_pipeline_output,
-        generate_html_report,
         generate_csv_report,
         generate_summary_report,
         generate_disclosure_docs,
@@ -536,32 +512,53 @@ def cmd_report(args):
     from core.schemas import success, error
     from core.step_report import step_context
 
-    output_path = args.output
+    fmt = args.format
+    output_path = args.output or _default_report_output(args.results, fmt)
     output_dir = os.path.dirname(os.path.abspath(output_path))
+
+    # Check if dynamic tests have been run (for summary/disclosure formats)
+    if fmt in ("summary", "disclosure") and not getattr(args, "skip_dt_check", False):
+        results_dir = os.path.dirname(os.path.abspath(args.results))
+        dt_results_path = os.path.join(results_dir, "dynamic_test_results.json")
+        if not os.path.exists(dt_results_path):
+            print(
+                "\nDynamic tests haven't been run yet.\n"
+                "If this is intentional, press Y to generate reports without dynamic test data.\n"
+                "Otherwise, run 'openant dynamic-test' first.\n",
+                file=sys.stderr,
+            )
+            try:
+                answer = input("[Y/n] ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                answer = "n"
+            if answer not in ("y", "yes", ""):
+                print("Aborted. Run 'openant dynamic-test' first.", file=sys.stderr)
+                return 0
 
     try:
         with step_context("report", output_dir, inputs={
             "results_path": os.path.abspath(args.results),
-            "format": args.format,
+            "format": fmt,
         }) as ctx:
-            fmt = args.format
-
             # For summary/disclosure, we need pipeline_output.json
             pipeline_output_path = args.pipeline_output
             if fmt in ("summary", "disclosure") and not pipeline_output_path:
-                # Auto-build pipeline_output from results
+                # Auto-build pipeline_output from results, with step report data
+                results_dir = os.path.dirname(os.path.abspath(args.results))
+                step_reports = _load_step_reports(results_dir)
                 pipeline_output_path = os.path.join(output_dir, "pipeline_output.json")
                 build_pipeline_output(
                     results_path=args.results,
                     output_path=pipeline_output_path,
                     repo_name=args.repo_name,
+                    step_reports=step_reports,
                 )
 
             if fmt == "html":
-                if not args.dataset:
-                    _output_json(error("--dataset is required for HTML reports"))
-                    return 2
-                result = generate_html_report(args.results, args.dataset, output_path)
+                # HTML reports are now rendered by the Go CLI via report-data.
+                # This code path should not be reached — Go handles html directly.
+                _output_json(error("HTML reports are generated by the Go CLI. Use 'openant report -f html' instead."))
+                return 2
             elif fmt == "csv":
                 if not args.dataset:
                     _output_json(error("--dataset is required for CSV reports"))
@@ -577,13 +574,381 @@ def cmd_report(args):
 
             summary = {"format": fmt}
             if pipeline_output_path and os.path.isfile(pipeline_output_path):
-                po = read_json(pipeline_output_path)
+                with open(pipeline_output_path) as f:
+                    po = json.load(f)
                 summary["findings_count"] = len(po.get("findings", []))
                 summary["results"] = po.get("results", {})
             ctx.summary = summary
             ctx.outputs = {"output_path": output_path}
 
         _output_json(success(result.to_dict()))
+        return 0
+
+    except Exception as e:
+        _output_json(error(str(e)))
+        return 2
+
+
+def cmd_checkpoint_status(args):
+    """Report checkpoint status for a checkpoint directory.
+
+    Internal subcommand — not user-facing. Called by the Go CLI to get
+    accurate completed/errored counts by reading actual checkpoint files.
+    """
+    from core.checkpoint import StepCheckpoint
+    from core.schemas import success, error
+
+    checkpoint_dir = args.checkpoint_dir
+    if not os.path.isdir(checkpoint_dir):
+        _output_json(error(f"Checkpoint directory not found: {checkpoint_dir}"))
+        return 2
+
+    try:
+        status = StepCheckpoint.status(checkpoint_dir)
+        _output_json(success(status))
+        return 0
+    except Exception as e:
+        _output_json(error(str(e)))
+        return 2
+
+
+def cmd_report_data(args):
+    """Prepare pre-computed report data as JSON for the Go HTML renderer.
+
+    Internal subcommand — not user-facing. Called by the Go CLI to get
+    all data needed to render the HTML overview report.
+
+    Outputs a JSON blob with stats, chart data, findings, remediation HTML,
+    and step reports — everything display-ready.
+    """
+    import html as html_mod
+    import anthropic
+    from core.schemas import success, error
+    from core.step_report import step_context
+    from utilities.llm_client import get_global_tracker
+
+    results_path = args.results
+    dataset_path = args.dataset
+
+    if not dataset_path:
+        _output_json(error("--dataset is required for report-data"))
+        return 2
+
+    results_dir = os.path.dirname(os.path.abspath(results_path))
+
+    try:
+        with step_context("report-data", results_dir, inputs={
+            "results_path": os.path.abspath(results_path),
+            "dataset_path": os.path.abspath(dataset_path),
+        }) as ctx:
+            # Load data
+            with open(results_path) as f:
+                experiment = json.load(f)
+            with open(dataset_path) as f:
+                dataset = json.load(f)
+
+            # --- Load dynamic test results if available ---
+            # Dynamic tests use VULN-XXX IDs from pipeline_output.json,
+            # but report-data works with route_keys from results_verified.json.
+            # Bridge via pipeline_output's location.function (== route_key).
+            dt_by_route_key = {}
+            dt_path = os.path.join(results_dir, "dynamic_test_results.json")
+            po_path = os.path.join(results_dir, "pipeline_output.json")
+            if os.path.exists(dt_path) and os.path.exists(po_path):
+                with open(dt_path) as f:
+                    dt_data = json.load(f)
+                with open(po_path) as f:
+                    po_data = json.load(f)
+
+                # Map VULN-ID → route_key from pipeline_output
+                vuln_id_to_route = {}
+                for finding in po_data.get("findings", []):
+                    fid = finding.get("id")
+                    route = finding.get("location", {}).get("function", "")
+                    if fid and route:
+                        vuln_id_to_route[fid] = route
+
+                # Map route_key → dynamic test result
+                for dr in dt_data.get("results", []):
+                    fid = dr.get("finding_id")
+                    route = vuln_id_to_route.get(fid)
+                    if route:
+                        dt_by_route_key[route] = dr
+
+                print(f"[Report] Loaded {len(dt_by_route_key)} dynamic test results", file=sys.stderr)
+
+            # --- Prepare findings ---
+            units_by_id = {u["id"]: u for u in dataset.get("units", [])}
+
+            verdict_order = ["vulnerable", "bypassable", "inconclusive", "protected", "safe"]
+            verdict_colors = {
+                "vulnerable": "#dc3545",
+                "bypassable": "#fd7e14",
+                "inconclusive": "#6c757d",
+                "protected": "#28a745",
+                "safe": "#20c997",
+            }
+            verdict_priority = {v: i for i, v in enumerate(verdict_order)}
+            dt_status_order = ["CONFIRMED", "INCONCLUSIVE", "ERROR", "", "BLOCKED", "NOT_REPRODUCED"]
+            dt_status_priority = {s: i for i, s in enumerate(dt_status_order)}
+
+            verdict_counts = {}
+            file_verdicts = {}
+            findings = []
+
+            for result in experiment.get("results", []):
+                route_key = result.get("route_key", "")
+                verdict = result.get("finding", "")
+                file_path = route_key.rsplit(":", 1)[0] if ":" in route_key else route_key
+                unit = units_by_id.get(route_key, {})
+                llm_context = unit.get("llm_context") or {}
+                verification = result.get("verification") or {}
+
+                # Justification: prefer stage2, fallback to stage1
+                justification = verification.get("explanation", "")
+                if not justification:
+                    justification = result.get("reasoning", "")
+                justification = justification[:300]
+
+                # Downgrade unverified findings to inconclusive
+                if justification.strip() == "Max iterations reached":
+                    verdict = "inconclusive"
+
+                verdict_counts[verdict] = verdict_counts.get(verdict, 0) + 1
+
+                # Track worst verdict per file
+                if file_path not in file_verdicts:
+                    file_verdicts[file_path] = verdict
+                elif verdict_priority.get(verdict, 3) < verdict_priority.get(file_verdicts[file_path], 3):
+                    file_verdicts[file_path] = verdict
+
+                func_name = route_key.split(":")[-1] if ":" in route_key else route_key
+
+                # Dynamic test result for this finding
+                dt_result = dt_by_route_key.get(route_key)
+                dt_status = ""
+                dt_details = ""
+                if dt_result:
+                    dt_status = dt_result.get("status", "")
+                    dt_details = dt_result.get("details", "")
+
+                findings.append({
+                    "verdict": verdict,
+                    "verdict_color": verdict_colors.get(verdict, "#6c757d"),
+                    "file": file_path,
+                    "function": func_name,
+                    "attack_vector": result.get("attack_vector", "") or "",
+                    "analysis": justification,
+                    "dynamic_test_status": dt_status,
+                    "dynamic_test_details": dt_details,
+                    "number": 0,  # assigned after sort
+                })
+
+            # Sort by verdict priority, then by dynamic test status within each group
+            findings.sort(key=lambda f: (
+                verdict_priority.get(f["verdict"], 3),
+                dt_status_priority.get(f["dynamic_test_status"], 3),
+            ))
+            for i, f in enumerate(findings, 1):
+                f["number"] = i
+
+            # --- Group findings by verdict, sub-grouped by dynamic test outcome ---
+            dt_subgroup_defs = [
+                ("Confirmed", lambda s: s == "CONFIRMED"),
+                ("Not reproduced", lambda s: s in ("NOT_REPRODUCED", "BLOCKED")),
+                ("Test error", lambda s: s == "ERROR"),
+                ("Not tested", lambda s: s in ("", "INCONCLUSIVE")),
+            ]
+
+            findings_by_verdict = []
+            for v in verdict_order:
+                group = [f for f in findings if f["verdict"] == v]
+                if not group:
+                    continue
+
+                subgroups = []
+                for label, predicate in dt_subgroup_defs:
+                    sg_findings = [f for f in group if predicate(f.get("dynamic_test_status", ""))]
+                    if sg_findings:
+                        subgroups.append({"label": label, "findings": sg_findings})
+
+                findings_by_verdict.append({
+                    "verdict": v,
+                    "verdict_color": verdict_colors[v],
+                    "count": len(group),
+                    "open_by_default": v in ("vulnerable", "bypassable"),
+                    "findings": group,
+                    "subgroups": subgroups,
+                    "has_subgroups": len(subgroups) > 1,
+                })
+
+            # --- Chart data ---
+            unit_chart = {
+                "labels": [v for v in verdict_order if v in verdict_counts],
+                "data": [verdict_counts.get(v, 0) for v in verdict_order if v in verdict_counts],
+                "colors": [verdict_colors[v] for v in verdict_order if v in verdict_counts],
+            }
+
+            file_verdict_counts = {}
+            for v in file_verdicts.values():
+                file_verdict_counts[v] = file_verdict_counts.get(v, 0) + 1
+
+            file_chart = {
+                "labels": [v for v in verdict_order if v in file_verdict_counts],
+                "data": [file_verdict_counts.get(v, 0) for v in verdict_order if v in file_verdict_counts],
+                "colors": [verdict_colors[v] for v in verdict_order if v in file_verdict_counts],
+            }
+
+            # --- Stats ---
+            total_units = len(experiment.get("results", []))
+            total_files = len(file_verdicts)
+
+            stats = {
+                "total_units": total_units,
+                "total_files": total_files,
+                "vulnerable": verdict_counts.get("vulnerable", 0),
+                "bypassable": verdict_counts.get("bypassable", 0),
+                "secure": verdict_counts.get("protected", 0) + verdict_counts.get("safe", 0),
+            }
+
+            # --- Remediation guidance (LLM call) ---
+            actionable = [f for f in findings if f["verdict"] in ("vulnerable", "bypassable", "inconclusive")]
+
+            if not actionable:
+                remediation_html = "<p>No vulnerabilities or security concerns found. All code units are either safe or properly protected.</p>"
+            else:
+                findings_text = ""
+                for f in actionable:
+                    findings_text += f"""
+### Finding #{f['number']}: {f['file']}:{f['function']}
+- **Verdict**: {f['verdict']}
+- **Attack Vector**: {f['attack_vector'] or 'Not specified'}
+- **Analysis**: {f['analysis'][:500]}
+"""
+                prompt = f"""Analyze these security findings and provide:
+
+1. **Executive Summary**: A brief overview of the security posture (2-3 sentences)
+
+2. **Prioritized Action Items**: Group remediation steps by priority: Critical Priority, High Priority, Medium Priority.
+   For each item:
+   - What to fix
+   - Why it's important
+   - How to fix it (concrete steps)
+   When referencing findings, use their exact numbers with # prefix (e.g. #4, #12, #13, #14).
+   Do NOT invent specific timeframes like "fix within 72 hours" — use only the priority labels above.
+
+3. **Quick Wins**: Any simple fixes that would immediately improve security
+
+Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not include ```html markers.
+
+## Findings to Analyze:
+{findings_text}
+"""
+                print("[Report] Generating remediation guidance (LLM)...", file=sys.stderr)
+                client = anthropic.Anthropic()
+                response = client.messages.create(
+                    model="claude-sonnet-4-20250514",
+                    max_tokens=4096,
+                    messages=[{"role": "user", "content": prompt}],
+                )
+                remediation_html = response.content[0].text
+
+                # Post-process: linkify finding references like #4, #12-#14
+                import re
+                def _linkify_finding(m):
+                    num = m.group(1)
+                    return f'<a href="#finding-{num}" class="finding-ref">#{num}</a>'
+                remediation_html = re.sub(r'#(\d+)', _linkify_finding, remediation_html)
+
+                # Track usage
+                usage = response.usage
+                tracker = get_global_tracker()
+                tracker.record_call(
+                    model="claude-sonnet-4-20250514",
+                    input_tokens=usage.input_tokens,
+                    output_tokens=usage.output_tokens,
+                )
+                print(f"  Remediation cost: ${(usage.input_tokens / 1e6) * 3.0 + (usage.output_tokens / 1e6) * 15.0:.4f}", file=sys.stderr)
+
+            # --- Step reports ---
+            step_reports_data = []
+            for sr in _load_step_reports(results_dir):
+                duration = sr.get("duration_seconds", 0)
+                cost = sr.get("cost_usd", 0)
+                if duration >= 60:
+                    dur_str = f"{duration / 60:.1f}m"
+                else:
+                    dur_str = f"{duration:.1f}s"
+                cost_str = f"${cost:.2f}" if cost > 0 else "-"
+
+                step_reports_data.append({
+                    "step": sr.get("step", "unknown"),
+                    "duration": dur_str,
+                    "cost": cost_str,
+                    "status": sr.get("status", "unknown"),
+                    "timestamp": sr.get("timestamp", ""),
+                })
+
+            # Sort by timestamp
+            step_reports_data.sort(key=lambda s: s.get("timestamp", ""))
+
+            # --- Category descriptions (static) ---
+            categories = [
+                {"verdict": "vulnerable", "color": "#dc3545", "description": "Code contains an exploitable security vulnerability with no effective protection. Immediate remediation required."},
+                {"verdict": "bypassable", "color": "#fd7e14", "description": "Security controls exist but can be circumvented under certain conditions. Review and strengthen protections."},
+                {"verdict": "inconclusive", "color": "#6c757d", "description": "Security posture could not be determined. Manual review recommended to assess risk."},
+                {"verdict": "protected", "color": "#28a745", "description": "Code handles potentially dangerous operations but has effective security controls in place."},
+                {"verdict": "safe", "color": "#20c997", "description": "Code does not involve security-sensitive operations or poses no security risk."},
+            ]
+
+            from datetime import datetime
+
+            # --- Repo info from pipeline_output.json ---
+            repo_name = ""
+            commit_sha = ""
+            language = ""
+            repo_url = ""
+            if os.path.exists(po_path):
+                try:
+                    with open(po_path) as f:
+                        po = json.load(f)
+                    repo_info = po.get("repository", {})
+                    repo_name = repo_info.get("name", "")
+                    commit_sha = repo_info.get("commit_sha", "")
+                    language = repo_info.get("language", "")
+                    repo_url = repo_info.get("url", "")
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+            # --- Totals from step reports ---
+            total_duration_seconds = 0.0
+            total_cost_usd = 0.0
+            for sr in _load_step_reports(results_dir):
+                total_duration_seconds += sr.get("duration_seconds", 0)
+                total_cost_usd += sr.get("cost_usd", 0)
+
+            report_data = {
+                "title": "Security Analysis Report",
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "repo_name": repo_name,
+                "commit_sha": commit_sha,
+                "language": language,
+                "repo_url": repo_url,
+                "total_duration_seconds": total_duration_seconds,
+                "total_cost_usd": total_cost_usd,
+                "stats": stats,
+                "unit_chart": unit_chart,
+                "file_chart": file_chart,
+                "remediation_html": remediation_html,
+                "findings": findings,
+                "findings_by_verdict": findings_by_verdict,
+                "step_reports": step_reports_data,
+                "categories": categories,
+            }
+
+            ctx.summary = {"findings": len(findings), "actionable": len(actionable)}
+
+        _output_json(success(report_data))
         return 0
 
     except Exception as e:
@@ -639,10 +1004,10 @@ def main():
     scan_p.add_argument("--no-skip-tests", action="store_true", help="Include test files in parsing (default: tests are skipped)")
     scan_p.add_argument("--limit", type=int, help="Max units to analyze")
     scan_p.add_argument("--model", choices=["opus", "sonnet"], default="opus", help="Model (default: opus)")
-    scan_p.add_argument("--fresh", action="store_true",
-                        help="Ignore previous progress and rerun all steps from scratch")
-    scan_p.add_argument("--concurrency", "-j", type=int, default=4,
-                        help="Number of concurrent LLM calls (default: 4)")
+    scan_p.add_argument("--workers", type=int, default=8,
+                        help="Number of parallel workers for LLM steps (default: 8)")
+    scan_p.add_argument("--backoff", type=int, default=30,
+                        help="Seconds to wait when rate-limited (default: 30)")
     scan_p.set_defaults(func=cmd_scan)
 
     # ---------------------------------------------------------------
@@ -696,18 +1061,17 @@ def main():
     enhance_p.add_argument("--analyzer-output", help="Path to analyzer_output.json (required for agentic mode)")
     enhance_p.add_argument("--repo-path", help="Path to the repository (required for agentic mode)")
     enhance_p.add_argument("--output", "-o", help="Output path for enhanced dataset (default: {input}_enhanced.json)")
-    enhance_p.add_argument("--fresh", action="store_true",
-                           help="Ignore checkpoint and reprocess all units from scratch")
-    enhance_p.add_argument("--skip-errors", action="store_true",
-                           help="Skip errored units instead of retrying them")
     enhance_p.add_argument(
         "--mode",
         choices=["agentic", "single-shot"],
         default="agentic",
         help="Enhancement mode (default: agentic — thorough but more expensive)",
     )
-    enhance_p.add_argument("--concurrency", "-j", type=int, default=4,
-                           help="Number of concurrent LLM calls (default: 4)")
+    enhance_p.add_argument("--workers", type=int, default=8,
+                           help="Number of parallel workers for LLM calls (default: 8)")
+    enhance_p.add_argument("--checkpoint", help="Path to checkpoint directory for save/resume")
+    enhance_p.add_argument("--backoff", type=int, default=30,
+                           help="Seconds to wait when rate-limited (default: 30)")
     enhance_p.set_defaults(func=cmd_enhance)
 
     # ---------------------------------------------------------------
@@ -721,15 +1085,17 @@ def main():
     analyze_p.add_argument("--app-context", help="Path to application_context.json")
     analyze_p.add_argument("--limit", type=int, help="Max units to analyze")
     analyze_p.add_argument("--repo-path", help="Path to the repository (for context correction)")
-    analyze_p.add_argument("--exploitable-only", action="store_true",
-                           help="Only analyze units classified as exploitable/vulnerable by enhancer")
+    exploit_group = analyze_p.add_mutually_exclusive_group()
+    exploit_group.add_argument("--exploitable-all", action="store_true",
+                               help="Analyze units classified as exploitable or vulnerable_internal (safer, compensates for parser gaps)")
+    exploit_group.add_argument("--exploitable-only", action="store_true",
+                               help="Analyze only units classified as exploitable (strict, use after parser entry point fixes)")
     analyze_p.add_argument("--model", choices=["opus", "sonnet"], default="opus", help="Model (default: opus)")
-    analyze_p.add_argument("--fresh", action="store_true",
-                           help="Ignore checkpoint and reanalyze all units from scratch")
-    analyze_p.add_argument("--skip-errors", action="store_true",
-                           help="Skip errored units instead of retrying them")
-    analyze_p.add_argument("--concurrency", "-j", type=int, default=4,
-                           help="Number of concurrent LLM calls (default: 4)")
+    analyze_p.add_argument("--workers", type=int, default=8,
+                           help="Number of parallel workers for LLM calls (default: 8)")
+    analyze_p.add_argument("--checkpoint", help="Path to checkpoint directory for save/resume")
+    analyze_p.add_argument("--backoff", type=int, default=30,
+                           help="Seconds to wait when rate-limited (default: 30)")
     analyze_p.set_defaults(func=cmd_analyze)
 
     # ---------------------------------------------------------------
@@ -741,10 +1107,11 @@ def main():
     verify_p.add_argument("--app-context", help="Path to application_context.json")
     verify_p.add_argument("--repo-path", help="Path to the repository")
     verify_p.add_argument("--output", "-o", help="Output directory (default: temp dir)")
-    verify_p.add_argument("--fresh", action="store_true",
-                          help="Ignore checkpoint and reverify all findings from scratch")
-    verify_p.add_argument("--concurrency", "-j", type=int, default=4,
-                          help="Number of concurrent LLM calls (default: 4)")
+    verify_p.add_argument("--workers", type=int, default=8,
+                          help="Number of parallel workers for LLM calls (default: 8)")
+    verify_p.add_argument("--checkpoint", help="Path to checkpoint directory for save/resume")
+    verify_p.add_argument("--backoff", type=int, default=30,
+                          help="Seconds to wait when rate-limited (default: 30)")
     verify_p.set_defaults(func=cmd_verify)
 
     # ---------------------------------------------------------------
@@ -779,14 +1146,30 @@ def main():
     report_p.add_argument(
         "--format", "-f",
         choices=["html", "csv", "summary", "disclosure"],
-        default="html",
-        help="Report format (default: html)",
+        default="disclosure",
+        help="Report format (default: disclosure)",
     )
     report_p.add_argument("--dataset", help="Path to dataset JSON (required for html/csv)")
     report_p.add_argument("--pipeline-output", help="Path to pipeline_output.json (for summary/disclosure; auto-built if absent)")
     report_p.add_argument("--repo-name", help="Repository name (used when auto-building pipeline_output)")
-    report_p.add_argument("--output", "-o", required=True, help="Output path")
+    report_p.add_argument("--output", "-o", help="Output path (default: derived from results path and format)")
     report_p.set_defaults(func=cmd_report)
+
+    # ---------------------------------------------------------------
+    # report-data — internal: prepare pre-computed report data as JSON
+    # ---------------------------------------------------------------
+    rd_p = subparsers.add_parser("report-data", help="(internal) Prepare report data for Go renderer")
+    rd_p.add_argument("results", help="Path to results/experiment JSON")
+    rd_p.add_argument("--dataset", required=True, help="Path to dataset JSON")
+    rd_p.set_defaults(func=cmd_report_data)
+
+    # ---------------------------------------------------------------
+    # checkpoint-status — internal: report checkpoint status for Go CLI
+    # ---------------------------------------------------------------
+    cs_p = subparsers.add_parser("checkpoint-status",
+        help="(internal) Report checkpoint status for a directory")
+    cs_p.add_argument("checkpoint_dir", help="Path to checkpoint directory")
+    cs_p.set_defaults(func=cmd_checkpoint_status)
 
     args = parser.parse_args()
     return args.func(args)

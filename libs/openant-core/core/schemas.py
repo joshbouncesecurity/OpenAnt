@@ -13,7 +13,7 @@ standardized metadata (timing, cost, inputs, outputs).
 import json
 import os
 from dataclasses import dataclass, field, asdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 
@@ -72,7 +72,6 @@ class AnalysisMetrics:
     vulnerable: int = 0
     bypassable: int = 0
     inconclusive: int = 0
-    insufficient_context: int = 0
     protected: int = 0
     safe: int = 0
     errors: int = 0
@@ -105,19 +104,14 @@ class ReportResult:
     """Result of `open-ant report`."""
     output_path: str
     format: str = "html"
+    usage: UsageInfo = field(default_factory=UsageInfo)
 
     def to_dict(self) -> dict:
-        d = asdict(self)
-        # Add format-specific path key expected by the Go CLI formatter
-        fmt_key = {
-            "html": "html_path",
-            "csv": "csv_path",
-            "summary": "summary_path",
-            "disclosure": "disclosure_path",
-        }.get(self.format)
-        if fmt_key:
-            d[fmt_key] = self.output_path
-        return d
+        return {
+            "output_path": self.output_path,
+            "format": self.format,
+            "usage": self.usage.to_dict(),
+        }
 
 
 @dataclass
@@ -140,7 +134,6 @@ class ScanResult:
     usage: UsageInfo = field(default_factory=UsageInfo)
     step_reports: list = field(default_factory=list)
     skipped_steps: list = field(default_factory=list)
-    resumed_steps: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -161,7 +154,6 @@ class ScanResult:
             "usage": self.usage.to_dict(),
             "step_reports": self.step_reports,
             "skipped_steps": self.skipped_steps,
-            "resumed_steps": self.resumed_steps,
         }
 
 
@@ -175,17 +167,21 @@ class EnhanceResult:
     enhanced_dataset_path: str
     units_enhanced: int = 0
     error_count: int = 0
+    error_summary: dict = field(default_factory=dict)
     classifications: dict = field(default_factory=dict)
     usage: UsageInfo = field(default_factory=UsageInfo)
 
     def to_dict(self) -> dict:
-        return {
+        result = {
             "enhanced_dataset_path": self.enhanced_dataset_path,
             "units_enhanced": self.units_enhanced,
             "error_count": self.error_count,
             "classifications": self.classifications,
             "usage": self.usage.to_dict(),
         }
+        if self.error_summary:
+            result["error_summary"] = self.error_summary
+        return result
 
 
 # ---------------------------------------------------------------------------
@@ -263,15 +259,15 @@ class StepReport:
 
     def __post_init__(self):
         if not self.timestamp:
-            self.timestamp = datetime.utcnow().isoformat() + "Z"
+            self.timestamp = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def write(self, output_dir: str) -> str:
         """Write ``{step}.report.json`` to *output_dir*. Returns the path."""
-        from core.utils import atomic_write_json
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, f"{self.step}.report.json")
-        atomic_write_json(path, self.to_dict())
+        with open(path, "w") as f:
+            json.dump(self.to_dict(), f, indent=2)
         return path
