@@ -24,7 +24,7 @@ git clone https://github.com/your-org/openant.git
 cd openant
 
 # Install Python dependencies
-pip install -r requirements.txt
+pip install -e .
 
 # Set API key
 echo "ANTHROPIC_API_KEY=your-key-here" > .env
