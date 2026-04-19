@@ -1,15 +1,12 @@
-"""Tests for error recovery in the upstream checkpoint system.
+"""Tests for checkpoint-based error retry in the pipeline.
 
-The fork's ``--skip-errors`` flag has been replaced by upstream's
-``StepCheckpoint`` system which *always* retries errored units on resume.
-These tests verify that behavior:
+``StepCheckpoint`` always retries errored units on resume. These tests
+verify that behavior:
 
 - ``StepCheckpoint.load_ids`` excludes errored units by default so they
   get re-processed on the next run.
 - ``_run_detection`` skips successfully-checkpointed units but retries
   errored ones.
-- ``run_analysis`` auto-retries units with transient errors after the
-  main detection pass.
 """
 
 import json
