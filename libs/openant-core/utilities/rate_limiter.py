@@ -15,10 +15,15 @@ Usage:
     rate_limiter = get_rate_limiter()
     rate_limiter.wait_if_needed()
 
-    # When catching RateLimitError
-    except anthropic.RateLimitError as e:
-        retry_after = float(e.response.headers.get("retry-after", 0))
-        rate_limiter.report_rate_limit(retry_after)
+    # Rate-limit detection happens centrally in llm_client._run_query, which
+    # raises utilities.sdk_errors.RateLimitError and calls
+    # rate_limiter.report_rate_limit(0) on every rate-limit event. Callers
+    # that need to attach state before re-raising:
+    from utilities.sdk_errors import RateLimitError
+    try:
+        ...
+    except RateLimitError:
+        # report_rate_limit already fired in _run_query
         raise
 """
 
