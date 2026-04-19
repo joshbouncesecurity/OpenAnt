@@ -585,13 +585,6 @@ class ContextEnhancer:
         stats = index.get_statistics()
         self._log("info", f"Indexed {stats['total_functions']} functions from {stats['total_files']} files")
 
-        # Create a single shared Anthropic client for all workers.
-        # Each ContextAgent previously created its own anthropic.Anthropic() instance,
-        # which spawns a new httpx connection pool. With 1000+ units and 8 workers,
-        # this exhausted file descriptors (macOS limit ~256). The httpx.Client
-        # underlying anthropic.Anthropic is thread-safe, so sharing is correct.
-        shared_client = anthropic.Anthropic(max_retries=5)
-
         # Filter to unprocessed units
         units_to_process = [(i, unit) for i, unit in enumerate(units) if unit.get("id") not in processed_ids]
 
@@ -601,7 +594,7 @@ class ContextEnhancer:
             unit_start = time.monotonic()
             classification = "neutral"
             try:
-                enhance_unit_with_agent(unit, index, self.tracker, verbose, client=shared_client)
+                enhance_unit_with_agent(unit, index, self.tracker, verbose)
 
                 agent_ctx = unit.get("agent_context", {})
                 classification = agent_ctx.get("security_classification", "neutral")
