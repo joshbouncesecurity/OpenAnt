@@ -11,6 +11,7 @@ sys.path hacks in the original code.
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -20,6 +21,9 @@ from utilities.file_io import read_json, write_json
 
 # Root of openant-core (where parsers/ lives)
 _CORE_ROOT = Path(__file__).parent.parent
+
+# JS parser directory (holds its own package.json / node_modules)
+_JS_PARSER_DIR = _CORE_ROOT / "parsers" / "javascript"
 
 # Shared language detection config (single source of truth: config/languages.json)
 _LANGUAGES_CONFIG = Path(__file__).parent.parent.parent.parent / "config" / "languages.json"
@@ -324,12 +328,47 @@ def _parse_python(repo_path: str, output_dir: str, processing_level: str, skip_t
 # JavaScript/TypeScript parser
 # ---------------------------------------------------------------------------
 
+def _ensure_js_parser_dependencies() -> None:
+    """Install the JS parser's Node dependencies on first use.
+
+    Mirrors the Go CLI's venv bootstrap (apps/openant-cli/internal/python/runtime.go):
+    the first invocation installs, subsequent invocations are a no-op. Runs only
+    when a JS repo is actually being parsed, so Python/Go-only users never need npm.
+    """
+    if (_JS_PARSER_DIR / "node_modules").is_dir():
+        return
+
+    npm = shutil.which("npm")
+    if npm is None:
+        raise RuntimeError(
+            "JavaScript parser dependencies are not installed and `npm` is not on PATH. "
+            f"Install Node.js/npm, then run: npm install (from {_JS_PARSER_DIR})"
+        )
+
+    print(
+        f"[Parser] Installing JS parser dependencies (first run, this may take a minute)...",
+        file=sys.stderr,
+    )
+    result = subprocess.run(
+        [npm, "install"],
+        cwd=str(_JS_PARSER_DIR),
+        stdout=sys.stderr,
+        stderr=sys.stderr,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"`npm install` failed in {_JS_PARSER_DIR} with exit code {result.returncode}"
+        )
+
+
 def _parse_javascript(repo_path: str, output_dir: str, processing_level: str, skip_tests: bool = True, name: str = None) -> ParseResult:
     """Invoke the JavaScript/TypeScript parser.
 
     The JS parser is a PipelineTest class that runs Node.js subprocesses.
     We invoke it via subprocess to avoid the sys.path hacks.
     """
+    _ensure_js_parser_dependencies()
+
     print("[Parser] Running JavaScript parser...", file=sys.stderr)
 
     # Build command — analyzer-path now defaults to co-located file in the parser
