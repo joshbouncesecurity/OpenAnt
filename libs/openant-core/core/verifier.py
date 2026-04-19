@@ -3,6 +3,10 @@ Verification wrapper (Stage 2 attacker simulation).
 
 Wraps FindingVerifier to run Stage 2 verification on Stage 1 results.
 Only verifies findings classified as vulnerable or bypassable.
+
+Checkpoints are always enabled. Per-finding results are saved to
+``{output_dir}/verify_checkpoints/`` so interrupted runs can resume.
+On successful completion the checkpoint dir is removed.
 """
 
 import json
@@ -12,6 +16,7 @@ from pathlib import Path
 
 from core.schemas import VerifyResult, UsageInfo
 from core import tracking
+from core.checkpoint import StepCheckpoint
 from core.progress import ProgressReporter
 from core.utils import atomic_write_json
 from utilities.file_io import read_json
@@ -35,14 +40,18 @@ def run_verification(
     analyzer_output_path: str,
     app_context_path: str | None = None,
     repo_path: str | None = None,
+    workers: int = 8,
     checkpoint_path: str | None = None,
-    fresh: bool = False,
-    concurrency: int = 4,
+    backoff_seconds: int = 30,
 ) -> VerifyResult:
     """Run Stage 2 attacker-simulation verification on Stage 1 results.
 
     Only findings with verdict ``vulnerable`` or ``bypassable`` are verified.
     Results are written to ``results_verified.json`` in *output_dir*.
+
+    Checkpoints are always enabled. Per-finding verification results are
+    saved to ``{output_dir}/verify_checkpoints/`` so interrupted runs
+    resume automatically.
 
     Args:
         results_path: Path to ``results.json`` from the analyze step.
@@ -51,8 +60,10 @@ def run_verification(
             repository index / tool use).
         app_context_path: Optional path to ``application_context.json``.
         repo_path: Optional path to the repository root (passed to index).
-        checkpoint_path: Path to save/resume checkpoint. Auto-generated if None.
-        fresh: If True, delete existing checkpoint and reverify all findings.
+        checkpoint_path: Path to checkpoint directory. If None, auto-derived
+            from output_dir.
+        workers: Number of parallel workers (default: 8).
+        backoff_seconds: Seconds to wait on rate limit before retry (default: 30).
 
     Returns:
         VerifyResult with paths, counts, and usage info.
@@ -61,57 +72,15 @@ def run_verification(
 
     verified_path = os.path.join(output_dir, "results_verified.json")
 
-    # Auto-generate checkpoint path
+    # Configure global rate limiter
+    from utilities.rate_limiter import configure_rate_limiter
+    configure_rate_limiter(backoff_seconds=float(backoff_seconds))
+
+    # Set up checkpoint
     if checkpoint_path is None:
-        checkpoint_path = os.path.join(output_dir, "verify_checkpoint.json")
-
-    # Handle fresh mode
-    if fresh:
-        if os.path.exists(checkpoint_path):
-            os.remove(checkpoint_path)
-    else:
-        # Skip-when-already-complete
-        has_checkpoint = os.path.exists(checkpoint_path)
-        if os.path.exists(verified_path) and not has_checkpoint:
-            print(f"[Verify] Already complete: {verified_path}", file=sys.stderr)
-            print("[Verify] Use --fresh to reverify all findings from scratch.", file=sys.stderr)
-
-            verified_data = read_json(verified_path)
-
-            # Count from existing results
-            agreed = 0
-            disagreed = 0
-            confirmed_vulnerabilities = 0
-            findings_input = 0
-            for r in verified_data.get("results", []):
-                # Count vulnerable/bypassable findings as input
-                # (matches the fresh verification path's filtering logic)
-                finding = r.get("finding", r.get("verdict", "")).lower()
-                if finding in ("vulnerable", "bypassable"):
-                    findings_input += 1
-
-                verification = r.get("verification")
-                if verification is None:
-                    continue
-                if verification.get("agree", False):
-                    agreed += 1
-                    if finding in ("vulnerable", "bypassable"):
-                        confirmed_vulnerabilities += 1
-                else:
-                    disagreed += 1
-
-            return VerifyResult(
-                verified_results_path=verified_path,
-                findings_input=findings_input,
-                findings_verified=findings_input,
-                agreed=agreed,
-                disagreed=disagreed,
-                confirmed_vulnerabilities=confirmed_vulnerabilities,
-                usage=UsageInfo(),
-            )
-
-    # Reset tracking for this verification run
-    tracking.reset_tracking()
+        checkpoint_path = os.path.join(output_dir, "verify_checkpoints")
+    checkpoint = StepCheckpoint("Verify", output_dir)
+    checkpoint.dir = checkpoint_path
 
     # Load Stage 1 results
     print(f"[Verify] Loading results: {results_path}", file=sys.stderr)
@@ -196,12 +165,16 @@ def run_verification(
             unit_elapsed=unit_elapsed,
         )
 
+    def _on_restored(count: int):
+        progress.completed = count
+
     try:
         verified_results = verifier.verify_batch(
             vulnerable_results, code_by_route,
             progress_callback=_on_finding_done,
-            checkpoint_path=checkpoint_path,
-            concurrency=concurrency,
+            workers=workers,
+            checkpoint=checkpoint,
+            restored_callback=_on_restored,
         )
     except Exception as e:
         print(f"[Verify] ERROR during batch verification: {e}", file=sys.stderr)
@@ -213,8 +186,12 @@ def run_verification(
     agreed = 0
     disagreed = 0
     confirmed_vulnerabilities = 0
+    error_count = 0
 
     for r in verified_results:
+        if r.get("error"):
+            error_count += 1
+            continue
         verification = r.get("verification", {})
         if verification.get("agree", False):
             agreed += 1
@@ -226,6 +203,11 @@ def run_verification(
 
     print(f"\n[Verify] Results: {agreed} agreed, {disagreed} disagreed, "
           f"{confirmed_vulnerabilities} confirmed vulnerabilities", file=sys.stderr)
+    if error_count:
+        print(f"[Verify] Errors: {error_count}", file=sys.stderr)
+
+    # Checkpoints are preserved as a permanent artifact alongside results
+    # (final summary with phase="done" is written inside verify_batch).
 
     tracking.log_usage("Stage 2")
 

@@ -16,7 +16,6 @@ from .agent import (
     ContextAgent,
     AgentResult,
     enhance_unit_with_agent,
-    apply_enhance_patch,
     create_reachability_context
 )
 from .repository_index import RepositoryIndex, load_index_from_file
@@ -28,7 +27,6 @@ __all__ = [
     "ContextAgent",
     "AgentResult",
     "enhance_unit_with_agent",
-    "apply_enhance_patch",
     "create_reachability_context",
     "RepositoryIndex",
     "load_index_from_file",

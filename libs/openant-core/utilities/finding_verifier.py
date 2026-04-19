@@ -30,26 +30,28 @@ Classes:
 
 import json
 import logging
-import os
 import re
+import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
-from .file_io import read_json
-from .llm_client import TokenTracker, get_global_tracker, run_native_verification, AnthropicClient
-from .parallel_executor import run_parallel
+import anthropic
+
+from .llm_client import TokenTracker, get_global_tracker
+from .rate_limiter import get_rate_limiter
 
 # Null logger that discards all messages (used when no logger provided)
 _null_logger = logging.getLogger("null_verifier")
 _null_logger.addHandler(logging.NullHandler())
 from .agentic_enhancer.repository_index import RepositoryIndex
+from .agentic_enhancer.tools import ToolExecutor
 from prompts.verification_prompts import (
     VERIFICATION_SYSTEM_PROMPT,
-    VERIFICATION_JSON_SCHEMA,
     get_verification_prompt,
     get_verification_system_prompt,
-    get_native_claude_verification_prompt,
     get_consistency_check_prompt
 )
 
@@ -60,9 +62,125 @@ except ImportError:
     ApplicationContext = None
 
 
-from .model_config import MODEL_PRIMARY
-VERIFIER_MODEL = MODEL_PRIMARY
+VERIFIER_MODEL = "claude-opus-4-6"
+MAX_ITERATIONS = 20
 MAX_TOKENS_PER_RESPONSE = 4096
+
+
+# Enhanced finish tool with exploit_path structure
+VERIFICATION_TOOLS = [
+    {
+        "name": "search_usages",
+        "description": "Search for all places where a function is called/used in the codebase. Use this to trace how attacker input flows through the code.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "function_name": {
+                    "type": "string",
+                    "description": "Name of the function to find usages of"
+                }
+            },
+            "required": ["function_name"]
+        }
+    },
+    {
+        "name": "search_definitions",
+        "description": "Search for where a function is defined. Use this to understand what a function does.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "function_name": {
+                    "type": "string",
+                    "description": "Name of the function to find definition of"
+                }
+            },
+            "required": ["function_name"]
+        }
+    },
+    {
+        "name": "read_function",
+        "description": "Read the full source code of a function by its ID. Use this to analyze function behavior.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "function_id": {
+                    "type": "string",
+                    "description": "Function identifier in format 'file/path.ts:functionName'"
+                }
+            },
+            "required": ["function_id"]
+        }
+    },
+    {
+        "name": "list_functions",
+        "description": "List all functions defined in a specific file.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "file_path": {
+                    "type": "string",
+                    "description": "Path to the file relative to repository root"
+                }
+            },
+            "required": ["file_path"]
+        }
+    },
+    {
+        "name": "finish",
+        "description": "Complete the verification with your verdict and exploit path analysis.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "agree": {
+                    "type": "boolean",
+                    "description": "Whether you agree with Stage 1's assessment"
+                },
+                "correct_finding": {
+                    "type": "string",
+                    "enum": ["safe", "protected", "bypassable", "vulnerable", "inconclusive"],
+                    "description": "The correct finding based on exploit path analysis"
+                },
+                "exploit_path": {
+                    "type": "object",
+                    "description": "Analysis of the exploit path from attacker input to sink",
+                    "properties": {
+                        "entry_point": {
+                            "type": ["string", "null"],
+                            "description": "Where attacker input enters (null if none found)"
+                        },
+                        "data_flow": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Steps showing how data flows from entry to sink"
+                        },
+                        "sink_reached": {
+                            "type": "boolean",
+                            "description": "Whether attacker-controlled data reaches the vulnerable operation"
+                        },
+                        "attacker_control_at_sink": {
+                            "type": "string",
+                            "enum": ["full", "partial", "none"],
+                            "description": "Level of attacker control at the dangerous operation"
+                        },
+                        "path_broken_at": {
+                            "type": ["string", "null"],
+                            "description": "Where/why the exploit path breaks (null if complete)"
+                        }
+                    }
+                },
+                "explanation": {
+                    "type": "string",
+                    "description": "Detailed explanation of your analysis"
+                },
+                "security_weakness": {
+                    "type": ["string", "null"],
+                    "description": "Any dangerous patterns that exist but aren't currently exploitable (optional)"
+                }
+            },
+            "required": ["agree", "correct_finding", "explanation"]
+        }
+    }
+]
 
 
 @dataclass
@@ -103,7 +221,6 @@ class VerificationResult:
     total_tokens: int
     exploit_path: Optional[ExploitPath] = None
     security_weakness: Optional[str] = None
-    raw_response: Optional[str] = None  # Full Claude Code response (not serialized)
 
     def to_dict(self) -> dict:
         result = {
@@ -147,57 +264,16 @@ class FindingVerifier:
         verbose: bool = False,
         app_context: "ApplicationContext" = None,
         logger: logging.Logger = None,
-        output_dir: str = None,
+        client: "anthropic.Anthropic | None" = None,
     ):
         self.index = index
         self.tracker = tracker or get_global_tracker()
         self.verbose = verbose
         self.app_context = app_context
-        self.client = AnthropicClient(model=VERIFIER_MODEL, tracker=self.tracker)
+        self.tool_executor = ToolExecutor(index)
+        self.client = client or anthropic.Anthropic(max_retries=5)
         self.logger = logger or _null_logger
         self._use_logger = logger is not None
-        self.output_dir = output_dir
-
-    def _save_explanation(self, route_key: str, verification: "VerificationResult"):
-        """Save verification explanation to a file in the output directory."""
-        verify_dir = os.path.join(self.output_dir, "verify_explanations")
-        os.makedirs(verify_dir, exist_ok=True)
-
-        # Sanitize route_key for use as filename
-        safe_name = re.sub(r'[\\/:*?"<>|]', '_', route_key)
-        filepath = os.path.join(verify_dir, f"{safe_name}.md")
-
-        content = f"# {route_key}\n\n"
-        content += f"**Verdict:** {verification.correct_finding}\n"
-        content += f"**Agrees with Stage 1:** {verification.agree}\n\n"
-        if verification.exploit_path:
-            ep = verification.exploit_path
-            content += "## Exploit Path\n\n"
-            if ep.entry_point:
-                content += f"**Entry point:** {ep.entry_point}\n\n"
-            if ep.data_flow:
-                content += "**Data flow:**\n"
-                for step in ep.data_flow:
-                    content += f"1. {step}\n"
-                content += "\n"
-            content += f"**Sink reached:** {ep.sink_reached}\n"
-            content += f"**Attacker control at sink:** {ep.attacker_control_at_sink}\n"
-            if ep.path_broken_at:
-                content += f"**Path broken at:** {ep.path_broken_at}\n"
-            content += "\n"
-        content += "## Explanation\n\n"
-        content += verification.explanation + "\n"
-        if verification.security_weakness:
-            content += f"\n## Security Weakness\n\n{verification.security_weakness}\n"
-
-        try:
-            with open(filepath, "w", encoding="utf-8") as f:
-                f.write(content)
-            print(f"[Verify] Saved explanation: {filepath}",
-                  file=__import__('sys').stderr, flush=True)
-        except OSError as e:
-            print(f"[Verify] Could not save explanation for {route_key}: {e}",
-                  file=__import__('sys').stderr, flush=True)
 
     def _log(self, level: str, msg: str, **extras):
         """Log a message, using logger if available, otherwise print if verbose."""
@@ -205,10 +281,9 @@ class FindingVerifier:
             log_func = getattr(self.logger, level, self.logger.info)
             log_func(msg, extra=extras)
         elif self.verbose:
-            # Fallback to print for CLI usage (stderr to avoid corrupting JSON stdout)
+            # Fallback to print for CLI usage
             suffix = " ".join(f"{k}={v}" for k, v in extras.items() if v is not None)
-            print(f"    {msg} {suffix}" if suffix else f"    {msg}",
-                  file=__import__('sys').stderr, flush=True)
+            print(f"    {msg} {suffix}" if suffix else f"    {msg}")
 
     def verify_result(
         self,
@@ -231,128 +306,124 @@ class FindingVerifier:
         Returns:
             VerificationResult with verdict, exploit path, and explanation
         """
-        # SDK handles both API key and local session modes — always use
-        # native Claude Code verification which lets the SDK explore the
-        # codebase with real tools (Read, Grep, Glob, Bash).
-        return self._verify_with_native_claude(
+        user_prompt = get_verification_prompt(
             code=code,
             finding=finding,
             attack_vector=attack_vector,
             reasoning=reasoning,
             files_included=files_included,
+            app_context=self.app_context
         )
 
-    def _verify_with_native_claude(
-        self,
-        code: str,
-        finding: str,
-        attack_vector: str,
-        reasoning: str,
-        files_included: list = None,
-    ) -> VerificationResult:
-        """
-        Verify using native Claude Code multi-turn mode.
-
-        Instead of the manual agentic loop with custom tools, this calls
-        `claude -p` with multi-turn enabled and lets Claude Code use its
-        native tools (Read, Grep, Glob, Bash) to explore the codebase.
-
-        Args:
-            code: The code that was assessed
-            finding: Stage 1's finding
-            attack_vector: Stage 1's attack vector
-            reasoning: Stage 1's reasoning
-            files_included: Optional list of files in context
-
-        Returns:
-            VerificationResult with verdict, exploit path, and explanation
-        """
-        # run_native_verification imported at module level from .llm_client
-
-        repo_path = str(self.index.repo_path) if self.index.repo_path else None
-        if not repo_path:
-            self._log("warning", "No repo_path available for native Claude Code mode")
-            return VerificationResult(
-                agree=True,
-                correct_finding=finding,
-                explanation="No repo_path available for native Claude Code verification",
-                iterations=0,
-                total_tokens=0,
-            )
-
-        user_prompt = get_native_claude_verification_prompt(
-            code=code,
-            finding=finding,
-            attack_vector=attack_vector,
-            reasoning=reasoning,
-            files_included=files_included,
-            app_context=self.app_context,
-        )
+        # Get system prompt with app context if available
         system_prompt = get_verification_system_prompt(self.app_context)
 
-        try:
-            result = run_native_verification(
-                prompt=user_prompt,
-                system=system_prompt,
-                model=VERIFIER_MODEL,
-                repo_path=repo_path,
-                json_schema=VERIFICATION_JSON_SCHEMA,
-                max_budget_usd=0.30,
-                timeout=600,
-            )
-        except (RuntimeError, FileNotFoundError, TimeoutError) as e:
-            print(f"[Verify] Native Claude Code verification failed: {e}",
-                  file=__import__('sys').stderr)
-            return VerificationResult(
-                agree=True,
-                correct_finding=finding,
-                explanation=f"Verification failed: {e}",
-                iterations=0,
-                total_tokens=0,
-            )
+        messages = [{"role": "user", "content": user_prompt}]
+        iterations = 0
+        total_input_tokens = 0
+        total_output_tokens = 0
 
-        # Track tokens and cost
-        input_tokens = result.get("input_tokens", 0)
-        output_tokens = result.get("output_tokens", 0)
-        total_tokens = input_tokens + output_tokens
+        while iterations < MAX_ITERATIONS:
+            iterations += 1
+
+            self._log("debug", f"Iteration {iterations}", iterations=iterations)
+
+            # Wait if we're in a global backoff period
+            rate_limiter = get_rate_limiter()
+            rate_limiter.wait_if_needed()
+
+            try:
+                response = self.client.messages.create(
+                    model=VERIFIER_MODEL,
+                    max_tokens=MAX_TOKENS_PER_RESPONSE,
+                    system=system_prompt,
+                    tools=VERIFICATION_TOOLS,
+                    messages=messages
+                )
+            except anthropic.RateLimitError as exc:
+                # Report to global rate limiter so all workers back off
+                retry_after = float(exc.response.headers.get("retry-after", 0))
+                get_rate_limiter().report_rate_limit(retry_after)
+                raise
+
+            total_input_tokens += response.usage.input_tokens
+            total_output_tokens += response.usage.output_tokens
+
+            assistant_content = response.content
+            stop_reason = response.stop_reason
+
+            # If model finished without calling finish tool, try to parse response
+            if stop_reason == "end_turn":
+                result = self._try_parse_text_response(
+                    assistant_content, finding, iterations,
+                    total_input_tokens, total_output_tokens
+                )
+                if result:
+                    return result
+
+                # Default: agree with Stage 1
+                return VerificationResult(
+                    agree=True,
+                    correct_finding=finding,
+                    explanation="Verification incomplete",
+                    iterations=iterations,
+                    total_tokens=total_input_tokens + total_output_tokens
+                )
+
+            # Process tool calls
+            tool_results = []
+            finish_result = None
+
+            for block in assistant_content:
+                if block.type == "tool_use":
+                    tool_name = block.name
+                    tool_input = block.input
+                    tool_use_id = block.id
+
+                    self._log("debug", f"Tool call: {tool_name}")
+
+                    if tool_name == "finish":
+                        finish_result = tool_input
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": json.dumps({"status": "complete"})
+                        })
+                        break
+                    else:
+                        result = self.tool_executor.execute(tool_name, tool_input)
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_use_id,
+                            "content": json.dumps(result)
+                        })
+
+            if finish_result:
+                self.tracker.record_call(
+                    model=VERIFIER_MODEL,
+                    input_tokens=total_input_tokens,
+                    output_tokens=total_output_tokens
+                )
+                return self._parse_finish_result(
+                    finish_result, finding, iterations,
+                    total_input_tokens + total_output_tokens
+                )
+
+            messages.append({"role": "assistant", "content": assistant_content})
+            messages.append({"role": "user", "content": tool_results})
+
+        # Max iterations reached
         self.tracker.record_call(
             model=VERIFIER_MODEL,
-            input_tokens=input_tokens,
-            output_tokens=output_tokens,
-            cost_usd=result.get("cost_usd"),
+            input_tokens=total_input_tokens,
+            output_tokens=total_output_tokens
         )
-
-        # Parse structured JSON from response
-        raw_text = result["text"]
-        parsed = self._extract_json(raw_text)
-        if parsed and "correct_finding" in parsed:
-            print(f"[Verify] Parsed JSON: agree={parsed.get('agree')}, "
-                  f"correct_finding={parsed.get('correct_finding')}",
-                  file=__import__('sys').stderr, flush=True)
-            vr = self._parse_finish_result(parsed, finding, 0, total_tokens)
-            vr.raw_response = raw_text
-            return vr
-
-        # Fallback: try to extract verdict from free-text response
-        fallback = self._parse_freetext_verdict(raw_text, finding)
-        if fallback:
-            print(f"[Verify] Parsed free-text: agree={fallback.get('agree')}, "
-                  f"correct_finding={fallback.get('correct_finding')}",
-                  file=__import__('sys').stderr, flush=True)
-            vr = self._parse_finish_result(fallback, finding, 0, total_tokens)
-            vr.raw_response = raw_text
-            return vr
-
-        # Final fallback
-        print(f"[Verify] Could not parse native Claude Code response: {raw_text[:500]}",
-              file=__import__('sys').stderr, flush=True)
         return VerificationResult(
             agree=True,
             correct_finding=finding,
-            explanation="Could not parse verification response",
-            iterations=0,
-            total_tokens=total_tokens,
-            raw_response=raw_text,
+            explanation="Max iterations reached",
+            iterations=iterations,
+            total_tokens=total_input_tokens + total_output_tokens
         )
 
     def verify_batch(
@@ -360,72 +431,162 @@ class FindingVerifier:
         results: list,
         code_by_route: dict,
         progress_callback: Optional[Callable] = None,
-        checkpoint_path: str | None = None,
-        concurrency: int = 4,
+        workers: int = 10,
+        checkpoint=None,
+        restored_callback: Optional[Callable] = None,
     ) -> list:
         """
         Verify a batch of results with consistency cross-check.
+
+        Uses ThreadPoolExecutor for parallel verification when workers > 1.
+        Supports checkpoint/resume via the checkpoint parameter.
 
         Args:
             results: List of Stage 1 results to verify
             code_by_route: Dict mapping route_key to code
             progress_callback: Optional callback(unit_id, detail, unit_elapsed)
                 called after each finding is verified.
-            checkpoint_path: Path to save/resume checkpoint. When provided,
-                previously verified findings are restored and skipped.
+            workers: Number of parallel workers (default: 10).
+            checkpoint: Optional StepCheckpoint instance for resume support.
+            restored_callback: Optional callback(count) called after checkpoint
+                loading with the number of restored units.
 
         Returns:
             Updated results with verification and consistency check
         """
-        # Load checkpoint if resuming
-        completed_keys = set()
-        if checkpoint_path and os.path.exists(checkpoint_path):
-            try:
-                cp = read_json(checkpoint_path)
-                completed_keys = set(cp.get("completed_keys", []))
-                # Restore verification data from checkpoint into results
-                cp_by_key = {r["route_key"]: r for r in cp.get("verified", [])}
-                for result in results:
-                    key = result.get("route_key", "unknown")
-                    if key in cp_by_key:
-                        result["verification"] = cp_by_key[key]["verification"]
-                        if "finding" in cp_by_key[key]:
-                            result["finding"] = cp_by_key[key]["finding"]
-                        if "verification_note" in cp_by_key[key]:
-                            result["verification_note"] = cp_by_key[key]["verification_note"]
-                # Restore cost accumulator from checkpoint
-                cp_token_usage = cp.get("token_usage")
-                if cp_token_usage:
-                    self.tracker.restore_from(cp_token_usage)
+        total = len(results)
 
-                print(f"[Verify] Resuming: {len(completed_keys)} findings already verified",
-                      file=__import__('sys').stderr)
-            except (json.JSONDecodeError, OSError):
-                # Corrupt checkpoint — start fresh
-                print("[Verify] Corrupt checkpoint, starting fresh",
-                      file=__import__('sys').stderr)
-                completed_keys = set()
+        # Load checkpoint state
+        checkpointed = {}
+        if checkpoint is not None:
+            checkpointed = checkpoint.load()
 
-        # Step 1: Individual verification
-        # Report resumed findings
-        pending_results = []
-        for result in results:
-            route_key = result.get("route_key", "unknown")
-            if route_key in completed_keys:
-                if progress_callback:
-                    progress_callback(route_key, "(resumed)", 0.0)
+        def _cp_is_error(cp_data):
+            """A verify checkpoint is errored if verification is missing/empty
+            or correct_finding == 'error'."""
+            if not cp_data:
+                return True
+            v = cp_data.get("verification", {})
+            if not v:
+                return True
+            return v.get("correct_finding") == "error"
+
+        # Separate already-done (successful) from to-do (new + errored)
+        results_to_verify = []
+        _restored_ok = 0
+        for r in results:
+            key = r.get("unit_id") or r.get("route_key", "unknown")
+            cp_data = checkpointed.get(key)
+            if cp_data and not _cp_is_error(cp_data):
+                # Restore verification data from checkpoint
+                if "verification" in cp_data:
+                    r["verification"] = cp_data["verification"]
+                if "finding" in cp_data:
+                    r["finding"] = cp_data["finding"]
+                if "verification_note" in cp_data:
+                    r["verification_note"] = cp_data["verification_note"]
+                _restored_ok += 1
             else:
-                pending_results.append(result)
+                # Either no checkpoint, or an errored one — re-verify
+                results_to_verify.append(r)
 
-        self._log("info", f"Verifying {len(pending_results)} findings (concurrency={concurrency})")
+        if _restored_ok:
+            print(f"[Verify] Restored {_restored_ok} findings from checkpoints",
+                  file=sys.stderr, flush=True)
+            if restored_callback:
+                restored_callback(_restored_ok)
+        errored_retries = len(checkpointed) - _restored_ok
+        if errored_retries:
+            print(f"[Verify] Retrying {errored_retries} previously errored findings",
+                  file=sys.stderr, flush=True)
 
-        def _verify_one(result):
-            """Verify a single finding (called from worker thread)."""
-            start = time.monotonic()
-            route_key = result.get("route_key", "unknown")
-            stage1_finding = result.get("finding", "inconclusive")
-            print(f"[Verify] Starting: {route_key} ({stage1_finding})",
-                  file=__import__('sys').stderr, flush=True)
+        # Initialize summary tracking for _summary.json
+        _summary_completed = _restored_ok
+        _summary_errors = 0
+        _summary_error_breakdown = {}
+        _summary_input_tokens = 0
+        _summary_output_tokens = 0
+        _summary_cost_usd = 0.0
+
+        # Sum usage from ALL existing checkpoints (including errored ones
+        # — their cost was already spent in a prior run)
+        for _key, _cp in checkpointed.items():
+            _cp_usage = _cp.get("usage", {})
+            _summary_input_tokens += _cp_usage.get("input_tokens", 0)
+            _summary_output_tokens += _cp_usage.get("output_tokens", 0)
+            _summary_cost_usd += _cp_usage.get("cost_usd", 0.0)
+
+        def _usage_dict():
+            return {"input_tokens": _summary_input_tokens,
+                    "output_tokens": _summary_output_tokens,
+                    "cost_usd": round(_summary_cost_usd, 6)}
+
+        # Inject prior usage into tracker so step_report captures the total
+        if _summary_input_tokens or _summary_output_tokens:
+            self.tracker.add_prior_usage(
+                _summary_input_tokens, _summary_output_tokens, _summary_cost_usd)
+
+        if checkpoint is not None:
+            checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                                     _summary_error_breakdown, phase="in_progress",
+                                     usage=_usage_dict())
+
+        def _summary_callback(detail, usage=None):
+            """Update summary counters after each unit. Called from main thread."""
+            nonlocal _summary_completed, _summary_errors, _summary_error_breakdown
+            nonlocal _summary_input_tokens, _summary_output_tokens, _summary_cost_usd
+            if detail == "error":
+                _summary_errors += 1
+                _summary_error_breakdown["api"] = _summary_error_breakdown.get("api", 0) + 1
+            else:
+                _summary_completed += 1
+            if usage:
+                _summary_input_tokens += usage.get("input_tokens", 0)
+                _summary_output_tokens += usage.get("output_tokens", 0)
+                _summary_cost_usd += usage.get("cost_usd", 0.0)
+            if checkpoint is not None:
+                checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                                         _summary_error_breakdown, phase="in_progress",
+                                         usage=_usage_dict())
+
+        remaining = len(results_to_verify)
+        mode = "sequential" if workers <= 1 else f"parallel ({workers} workers)"
+        print(f"[Verify] Mode: {mode}, {remaining} findings to verify "
+              f"({len(checkpointed)} already done)", file=sys.stderr, flush=True)
+
+        if workers <= 1:
+            self._verify_batch_sequential(
+                results_to_verify, code_by_route, progress_callback, checkpoint,
+                summary_callback=_summary_callback)
+        else:
+            self._verify_batch_parallel(
+                results_to_verify, code_by_route, progress_callback, workers, checkpoint,
+                summary_callback=_summary_callback)
+
+        # Write final summary with phase="done"
+        if checkpoint is not None:
+            checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                                     _summary_error_breakdown, phase="done",
+                                     usage=_usage_dict())
+
+        # Step 2: Consistency cross-check (barrier — needs all results)
+        results = self._check_consistency(results, code_by_route)
+
+        return results
+
+    def _verify_one(self, result, code_by_route):
+        """Verify a single result. Returns (route_key, detail, elapsed, worker, usage).
+
+        Mutates the result dict in-place (each result is unique, no contention).
+        """
+        route_key = result.get("route_key", "unknown")
+        stage1_finding = result.get("finding", "inconclusive")
+        worker = threading.current_thread().name
+
+        self.tracker.start_unit_tracking()
+        unit_start = time.monotonic()
+        detail = ""
+        try:
             code = code_by_route.get(route_key, "")
             verification = self.verify_result(
                 code=code,
@@ -434,13 +595,6 @@ class FindingVerifier:
                 reasoning=result.get("reasoning", ""),
                 files_included=result.get("files_included", [])
             )
-            return (verification, time.monotonic() - start)
-
-        def _on_complete(result, verify_output):
-            """Called under lock after successful verification."""
-            verification, unit_elapsed = verify_output
-            route_key = result.get("route_key", "unknown")
-            stage1_finding = result.get("finding", "inconclusive")
 
             result["verification"] = verification.to_dict()
 
@@ -457,49 +611,78 @@ class FindingVerifier:
                           unit_id=route_key, total_tokens=verification.total_tokens,
                           iterations=verification.iterations)
 
-            # Print full Claude Code analysis when verbose mode is enabled
-            if self.verbose and verification.explanation:
-                print(f"\n{'='*60}\n[Verify] {route_key} -> {verification.correct_finding}\n{'='*60}\n{verification.explanation}\n{'='*60}\n",
-                      file=__import__('sys').stderr, flush=True)
+        except Exception as e:
+            detail = "error"
+            print(f"[Verify] ERROR {route_key}: {type(e).__name__}: {e}", file=sys.stderr, flush=True)
 
-            # Save explanation to file
-            if self.output_dir and verification.explanation:
-                self._save_explanation(route_key, verification)
+        unit_elapsed = time.monotonic() - unit_start
+        usage = self.tracker.get_unit_usage()
+        return route_key, detail, unit_elapsed, worker, usage
 
-            if checkpoint_path:
-                completed_keys.add(route_key)
-                _save_verify_checkpoint(checkpoint_path, results, completed_keys, self.tracker)
-            if progress_callback:
-                progress_callback(route_key, detail, unit_elapsed)
+    def _verify_batch_sequential(self, results, code_by_route, progress_callback,
+                                 checkpoint=None, summary_callback=None):
+        """Verify all results sequentially."""
+        try:
+            for i, result in enumerate(results):
+                route_key = result.get("route_key", "unknown")
+                stage1_finding = result.get("finding", "inconclusive")
+                self._log("info", f"Verifying finding {i+1}/{len(results)}",
+                          unit_id=route_key, classification=stage1_finding)
 
-        def _on_error(result, exc):
-            """Called under lock when verification raises."""
-            route_key = result.get("route_key", "unknown")
-            self._log("error", f"Verification failed", unit_id=route_key, error=str(exc))
-            # Do NOT add to completed_keys — errored findings will be
-            # retried on resume (matching analyze/enhance behavior).
-            # We intentionally skip checkpoint save here: the last successful
-            # _on_complete already persisted all completed work. If the process
-            # dies after this error, the errored finding is simply reprocessed.
-            if progress_callback:
-                progress_callback(route_key, "error", 0.0)
+                route_key, detail, unit_elapsed, _worker, usage = self._verify_one(result, code_by_route)
+                if checkpoint is not None:
+                    key = result.get("unit_id") or route_key
+                    cp_data = {
+                        "verification": result.get("verification", {}),
+                        "finding": result.get("finding", ""),
+                        "verification_note": result.get("verification_note", ""),
+                    }
+                    if usage:
+                        cp_data["usage"] = usage
+                    checkpoint.save(key, cp_data)
+                if summary_callback:
+                    summary_callback(detail, usage=usage)
+                if progress_callback:
+                    progress_callback(route_key, detail, unit_elapsed)
+        except KeyboardInterrupt:
+            print("[Verify] Interrupted — progress saved to checkpoints",
+                  file=sys.stderr, flush=True)
 
-        run_parallel(
-            items=pending_results,
-            process_fn=_verify_one,
-            concurrency=concurrency,
-            on_complete=_on_complete,
-            on_error=_on_error,
-        )
+    def _verify_batch_parallel(self, results, code_by_route, progress_callback, workers,
+                                checkpoint=None, summary_callback=None):
+        """Verify all results in parallel using ThreadPoolExecutor."""
+        executor = ThreadPoolExecutor(max_workers=workers)
+        future_to_result = {}
+        for result in results:
+            future = executor.submit(self._verify_one, result, code_by_route)
+            future_to_result[future] = result
 
-        # Step 2: Consistency cross-check runs on ALL results (including resumed ones)
-        results = self._check_consistency(results, code_by_route)
-
-        # Clean up checkpoint on success
-        if checkpoint_path and os.path.exists(checkpoint_path):
-            os.remove(checkpoint_path)
-
-        return results
+        try:
+            for future in as_completed(future_to_result):
+                result = future_to_result[future]
+                route_key, detail, unit_elapsed, worker, usage = future.result()
+                if checkpoint is not None:
+                    key = result.get("unit_id") or route_key
+                    cp_data = {
+                        "verification": result.get("verification", {}),
+                        "finding": result.get("finding", ""),
+                        "verification_note": result.get("verification_note", ""),
+                    }
+                    if usage:
+                        cp_data["usage"] = usage
+                    checkpoint.save(key, cp_data)
+                if summary_callback:
+                    summary_callback(detail, usage=usage)
+                if progress_callback:
+                    progress_callback(route_key, f"{detail}  [{worker}]", unit_elapsed)
+        except KeyboardInterrupt:
+            print("[Verify] Interrupted — cancelling pending work...",
+                  file=sys.stderr, flush=True)
+            executor.shutdown(wait=False, cancel_futures=True)
+            print("[Verify] Progress saved to checkpoints",
+                  file=sys.stderr, flush=True)
+            return
+        executor.shutdown(wait=False)
 
     def _check_consistency(
         self,
@@ -647,6 +830,10 @@ class FindingVerifier:
         prompt = get_consistency_check_prompt(group, code_by_route)
 
         try:
+            # Wait if we're in a global backoff period
+            rate_limiter = get_rate_limiter()
+            rate_limiter.wait_if_needed()
+
             response = self.client.messages.create(
                 model=VERIFIER_MODEL,
                 max_tokens=MAX_TOKENS_PER_RESPONSE,
@@ -657,8 +844,7 @@ class FindingVerifier:
             self.tracker.record_call(
                 model=VERIFIER_MODEL,
                 input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                cost_usd=getattr(response, 'cost_usd', None),
+                output_tokens=response.usage.output_tokens
             )
 
             # Parse response
@@ -673,6 +859,11 @@ class FindingVerifier:
                     explanation=result.get("explanation", "")
                 )
 
+        except anthropic.RateLimitError as e:
+            # Report to global rate limiter so all workers back off
+            retry_after = float(e.response.headers.get("retry-after", 0))
+            get_rate_limiter().report_rate_limit(retry_after)
+            self._log("error", f"Consistency resolution rate limited", error=str(e))
         except Exception as e:
             self._log("error", f"Consistency resolution failed", error=str(e))
 
@@ -708,6 +899,30 @@ class FindingVerifier:
             security_weakness=finish_result.get("security_weakness")
         )
 
+    def _try_parse_text_response(
+        self,
+        assistant_content: list,
+        original_finding: str,
+        iterations: int,
+        total_input_tokens: int,
+        total_output_tokens: int
+    ) -> Optional[VerificationResult]:
+        """Try to parse a text response as JSON."""
+        for block in assistant_content:
+            if hasattr(block, 'text'):
+                result = self._parse_json_from_text(block.text)
+                if result:
+                    self.tracker.record_call(
+                        model=VERIFIER_MODEL,
+                        input_tokens=total_input_tokens,
+                        output_tokens=total_output_tokens
+                    )
+                    return self._parse_finish_result(
+                        result, original_finding, iterations,
+                        total_input_tokens + total_output_tokens
+                    )
+        return None
+
     def _parse_json_from_text(self, text: str) -> Optional[dict]:
         """Extract JSON object from text, with LLM correction fallback."""
         try:
@@ -730,113 +945,3 @@ class FindingVerifier:
             except Exception:
                 pass
         return None
-
-    @staticmethod
-    def _extract_json(text: str) -> Optional[dict]:
-        """Extract a JSON object from text without LLM fallback.
-
-        Tries:
-        1. Parse the entire text as JSON
-        2. Extract JSON from a ```json code block
-        3. Find the outermost { ... } pair
-        """
-        text = text.strip()
-
-        # Try parsing the whole thing
-        try:
-            return json.loads(text)
-        except (json.JSONDecodeError, ValueError):
-            pass
-
-        # Try extracting from ```json ... ``` code block
-        json_block = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', text, re.DOTALL)
-        if json_block:
-            try:
-                return json.loads(json_block.group(1))
-            except json.JSONDecodeError:
-                pass
-
-        # Try finding outermost braces
-        start = text.find('{')
-        end = text.rfind('}') + 1
-        if start >= 0 and end > start:
-            try:
-                return json.loads(text[start:end])
-            except json.JSONDecodeError:
-                pass
-
-        return None
-
-    @staticmethod
-    def _parse_freetext_verdict(text: str, original_finding: str) -> Optional[dict]:
-        """Extract a verdict from free-text response when JSON parsing fails.
-
-        Looks for keywords like PROTECTED, SAFE, VULNERABLE in the response
-        and constructs a result dict.
-        """
-        text_lower = text.lower()
-
-        # Determine verdict from common patterns
-        correct_finding = None
-        agree = None
-
-        # Check for disagree/agree signals
-        if "disagree" in text_lower:
-            agree = False
-        elif "agree" in text_lower:
-            agree = True
-
-        # Check for verdict keywords
-        for verdict in ["vulnerable", "bypassable", "protected", "safe", "inconclusive"]:
-            # Look for patterns like "correct finding is PROTECTED" or "verdict: SAFE"
-            patterns = [
-                rf'(?:verdict|finding|correct_finding|conclusion)[:\s]*\**{verdict}\**',
-                rf'\*\*{verdict.upper()}\*\*',
-            ]
-            for pattern in patterns:
-                if re.search(pattern, text, re.IGNORECASE):
-                    correct_finding = verdict
-                    break
-            if correct_finding:
-                break
-
-        if not correct_finding:
-            return None
-
-        if agree is None:
-            agree = correct_finding == original_finding
-
-        # Extract first ~500 chars as explanation
-        explanation = text[:500].strip()
-        if len(text) > 500:
-            explanation += "..."
-
-        return {
-            "agree": agree,
-            "correct_finding": correct_finding,
-            "explanation": explanation,
-        }
-
-
-def _save_verify_checkpoint(checkpoint_path: str, results: list, completed_keys: set,
-                            tracker: TokenTracker = None):
-    """Save verify checkpoint using atomic writes."""
-    from core.utils import atomic_write_json
-    # Only save results that have been verified (have verification data)
-    verified = []
-    for r in results:
-        key = r.get("route_key", "unknown")
-        if key in completed_keys and "verification" in r:
-            verified.append({
-                "route_key": key,
-                "verification": r["verification"],
-                "finding": r.get("finding"),
-                "verification_note": r.get("verification_note"),
-            })
-    data = {
-        "completed_keys": list(completed_keys),
-        "verified": verified,
-    }
-    if tracker:
-        data["token_usage"] = tracker.get_totals()
-    atomic_write_json(checkpoint_path, data)

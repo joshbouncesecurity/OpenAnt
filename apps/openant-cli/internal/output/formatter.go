@@ -108,7 +108,7 @@ func PrintScanSummary(data map[string]any) {
 	// Usage info
 	if usage, ok := data["usage"].(map[string]any); ok {
 		PrintHeader("Usage")
-		cost := floatFromAny(usage["total_cost"])
+		cost := floatFromAny(usage["total_cost_usd"])
 		inputTokens := intFromAny(usage["total_input_tokens"])
 		outputTokens := intFromAny(usage["total_output_tokens"])
 
@@ -177,7 +177,6 @@ func PrintAnalyzeSummary(data map[string]any) {
 	protected := intFromAny(metrics["protected"])
 	safe := intFromAny(metrics["safe"])
 	inconclusive := intFromAny(metrics["inconclusive"])
-	insufficientContext := intFromAny(metrics["insufficient_context"])
 	errors := intFromAny(metrics["errors"])
 
 	PrintKeyValue("Total units", fmt.Sprintf("%d", total))
@@ -188,15 +187,10 @@ func PrintAnalyzeSummary(data map[string]any) {
 	} else {
 		green.Printf("  Vulnerable: 0\n")
 	}
-	if protected > 0 {
-		PrintKeyValue("Protected", fmt.Sprintf("%d", protected))
-	}
+	PrintKeyValue("Protected", fmt.Sprintf("%d", protected))
 	PrintKeyValue("Safe", fmt.Sprintf("%d", safe))
 	if inconclusive > 0 {
 		yellow.Printf("  Inconclusive: %d\n", inconclusive)
-	}
-	if insufficientContext > 0 {
-		yellow.Printf("  Insufficient context: %d\n", insufficientContext)
 	}
 	if errors > 0 {
 		yellow.Printf("  Errors: %d\n", errors)
@@ -210,15 +204,21 @@ func PrintAnalyzeSummary(data map[string]any) {
 
 // PrintReportSummary outputs a formatted summary of report generation.
 func PrintReportSummary(data map[string]any) {
-	PrintHeader("Reports Generated")
-	if html, ok := data["html_path"].(string); ok && html != "" {
-		PrintKeyValue("HTML", html)
+	PrintHeader("Report Generated")
+	if format, ok := data["format"].(string); ok && format != "" {
+		PrintKeyValue("Format", format)
 	}
-	if csv, ok := data["csv_path"].(string); ok && csv != "" {
-		PrintKeyValue("CSV", csv)
+	if path, ok := data["output_path"].(string); ok && path != "" {
+		PrintKeyValue("Output", path)
 	}
-	if summary, ok := data["summary_path"].(string); ok && summary != "" {
-		PrintKeyValue("Summary", summary)
+	if path, ok := data["reskin_path"].(string); ok && path != "" {
+		PrintKeyValue("Reskin", path)
+	}
+	if usage, ok := data["usage"].(map[string]any); ok {
+		cost := floatFromAny(usage["total_cost_usd"])
+		if cost > 0 {
+			PrintKeyValue("Cost", fmt.Sprintf("$%.4f", cost))
+		}
 	}
 	fmt.Println()
 }

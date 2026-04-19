@@ -5,6 +5,10 @@ Wraps the experiment.py analysis logic, accepting file paths instead of
 hardcoded dataset names. Reuses the existing analysis functions directly.
 
 Stage 2 verification is handled separately by ``core.verifier``.
+
+Checkpoints are always enabled. Per-unit results are saved to
+``{output_dir}/analyze_checkpoints/`` so interrupted runs can resume.
+On successful completion the checkpoint dir is removed.
 """
 
 import json
@@ -13,19 +17,21 @@ import shutil
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
 from core.schemas import AnalyzeResult, AnalysisMetrics, UsageInfo
 from core import tracking
+from core.checkpoint import StepCheckpoint
 from core.progress import ProgressReporter
 from core.utils import atomic_write_json
 from utilities.file_io import read_json
-from utilities.parallel_executor import run_parallel
 
 # Import existing analysis machinery
 from utilities.llm_client import AnthropicClient, get_global_tracker
 from utilities.json_corrector import JSONCorrector
+from utilities.rate_limiter import get_rate_limiter, is_rate_limit_error, is_retryable_error
 
 # Reuse the core analysis functions from experiment.py
 from experiment import (
@@ -43,12 +49,199 @@ except ImportError:
     load_context = None
 
 
-def _recount_metrics(results: list) -> AnalysisMetrics:
-    """Recount verdict metrics from the results list.
+def _process_unit(client, unit, index, json_corrector, app_context):
+    """Process a single unit for Stage 1 detection.
 
-    This is more reliable than trusting saved metrics, since older runs
-    may have missed certain verdict types (e.g. insufficient_context).
+    Returns a dict with all result data. Does not mutate shared state.
     """
+    uid = unit.get("id", f"unit_{index}")
+    start = time.monotonic()
+    tracker = get_global_tracker()
+    tracker.start_unit_tracking()
+
+    try:
+        result = analyze_unit(
+            client, unit,
+            use_multifile=True,
+            json_corrector=json_corrector,
+            app_context=app_context,
+        )
+
+        # Ensure unit_id is always present
+        result["unit_id"] = uid
+
+        # Ensure finding field is always set (may be None after JSON correction)
+        if not result.get("finding") and result.get("verdict"):
+            result["finding"] = result["verdict"].lower()
+
+        # Extract code for verify step
+        route_key = result.get("route_key", uid)
+        code_field = unit.get("code", {})
+        if isinstance(code_field, dict):
+            code_for_route = code_field.get("primary_code", "")
+        else:
+            code_for_route = code_field
+
+        finding = result.get("finding", "error")
+        elapsed = time.monotonic() - start
+        worker = threading.current_thread().name
+
+        return {
+            "index": index,
+            "result": result,
+            "route_key": route_key,
+            "code_for_route": code_for_route,
+            "finding": finding,
+            "elapsed": elapsed,
+            "error": None,
+            "worker": worker,
+            "usage": tracker.get_unit_usage(),
+        }
+
+    except Exception as e:
+        elapsed = time.monotonic() - start
+        worker = threading.current_thread().name
+        return {
+            "index": index,
+            "result": {
+                "unit_id": uid,
+                "verdict": "ERROR",
+                "finding": "error",
+                "error": str(e),
+            },
+            "route_key": uid,
+            "code_for_route": "",
+            "finding": "error",
+            "elapsed": elapsed,
+            "error": str(e),
+            "worker": worker,
+            "usage": tracker.get_unit_usage(),
+        }
+
+
+def _run_detection(units, client, json_corrector, app_context, workers,
+                   checkpoint=None, summary_callback=None):
+    """Run Stage 1 detection across all units.
+
+    Uses ThreadPoolExecutor for parallel processing when workers > 1.
+    Supports checkpoint/resume via the checkpoint parameter.
+
+    Args:
+        summary_callback: Optional callable(finding, usage=None) called from
+            main thread after each unit completes. Used for _summary.json updates.
+
+    Returns (results_list, code_by_route_dict) in original unit order.
+    """
+    total = len(units)
+    tracker = get_global_tracker()
+
+    # Load checkpoint state
+    checkpointed = {}
+    if checkpoint is not None:
+        checkpointed = checkpoint.load()
+        if checkpointed:
+            print(f"[Detect] Restored {len(checkpointed)} units from checkpoints",
+                  file=sys.stderr, flush=True)
+
+    progress = ProgressReporter("Detect", total, tracker=tracker, completed=len(checkpointed))
+
+    mode = "sequential" if workers <= 1 else f"parallel ({workers} workers)"
+    remaining = total - len(checkpointed)
+    print(f"[Detect] Mode: {mode}, {remaining} units to process ({len(checkpointed)} already done)",
+          file=sys.stderr, flush=True)
+
+    # Pre-populate results from checkpoints, but ONLY for successfully-completed
+    # units. Errored units are loaded into the "units_to_process" list so they
+    # get retried on resume (matches enhance's behavior).
+    results = [None] * total
+    code_by_route = {}
+    units_to_process = []
+
+    def _cp_is_error(cp_data):
+        res = cp_data.get("result", {}) if cp_data else {}
+        return res.get("verdict") == "ERROR" or res.get("finding") == "error"
+
+    for i, unit in enumerate(units):
+        uid = unit.get("id", f"unit_{i}")
+        cp_data = checkpointed.get(uid)
+        if cp_data and not _cp_is_error(cp_data):
+            results[i] = cp_data.get("result", {})
+            code_by_route[cp_data.get("route_key", uid)] = cp_data.get("code_for_route", "")
+        else:
+            units_to_process.append((i, unit))
+
+    def _process_and_save(i, unit):
+        out = _process_unit(client, unit, i, json_corrector, app_context)
+        # Save checkpoint
+        if checkpoint is not None:
+            uid = out["result"].get("unit_id", f"unit_{i}")
+            cp_data = {
+                "result": out["result"],
+                "route_key": out["route_key"],
+                "code_for_route": out["code_for_route"],
+            }
+            if out.get("usage"):
+                cp_data["usage"] = out["usage"]
+            checkpoint.save(uid, cp_data)
+        return out
+
+    if workers <= 1:
+        # Sequential mode
+        try:
+            for i, unit in units_to_process:
+                out = _process_and_save(i, unit)
+                results[i] = out["result"]
+                code_by_route[out["route_key"]] = out["code_for_route"]
+                if summary_callback:
+                    summary_callback(out["finding"], usage=out.get("usage"))
+                progress.report(
+                    out["result"].get("unit_id", f"unit_{i}"),
+                    detail=out["finding"],
+                    unit_elapsed=out["elapsed"],
+                )
+        except KeyboardInterrupt:
+            print("[Detect] Interrupted — progress saved to checkpoints",
+                  file=sys.stderr, flush=True)
+        progress.finish()
+        return results, code_by_route
+
+    # Parallel mode
+    executor = ThreadPoolExecutor(max_workers=workers)
+    future_to_index = {}
+    for i, unit in units_to_process:
+        future = executor.submit(_process_and_save, i, unit)
+        future_to_index[future] = i
+
+    try:
+        for future in as_completed(future_to_index):
+            out = future.result()
+            idx = out["index"]
+            results[idx] = out["result"]
+            code_by_route[out["route_key"]] = out["code_for_route"]
+            if summary_callback:
+                summary_callback(out["finding"], usage=out.get("usage"))
+            worker = out.get("worker", "?")
+            progress.report(
+                out["result"].get("unit_id", f"unit_{idx}"),
+                detail=f"{out['finding']}  [{worker}]",
+                unit_elapsed=out["elapsed"],
+            )
+    except KeyboardInterrupt:
+        print("[Detect] Interrupted — cancelling pending work...",
+              file=sys.stderr, flush=True)
+        executor.shutdown(wait=False, cancel_futures=True)
+        print("[Detect] Progress saved to checkpoints",
+              file=sys.stderr, flush=True)
+    else:
+        executor.shutdown(wait=False)
+
+    progress.finish()
+
+    return results, code_by_route
+
+
+def _count_verdicts(results):
+    """Count verdict categories from a results list."""
     counts = {
         "vulnerable": 0,
         "bypassable": 0,
@@ -64,22 +257,7 @@ def _recount_metrics(results: list) -> AnalysisMetrics:
             counts[finding] += 1
         elif r.get("verdict") == "ERROR":
             counts["errors"] += 1
-    return AnalysisMetrics(total=len(results), **counts)
-
-
-def _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id,
-                             tracker=None):
-    """Save analyze checkpoint using atomic writes."""
-    data = {
-        "results": results,
-        "code_by_route": code_by_route,
-        "counts": counts,
-        "dataset": os.path.basename(dataset_path),
-        "model": model_id,
-    }
-    if tracker:
-        data["token_usage"] = tracker.get_totals()
-    atomic_write_json(checkpoint_path, data)
+    return counts
 
 
 def run_analysis(
@@ -90,17 +268,20 @@ def run_analysis(
     repo_path: str | None = None,
     limit: int | None = None,
     model: str = "opus",
-    exploitable_only: bool = False,
+    exploitable_filter: str | None = None,
+    workers: int = 8,
     checkpoint_path: str | None = None,
-    fresh: bool = False,
-    skip_errors: bool = False,
-    concurrency: int = 4,
+    backoff_seconds: int = 30,
 ) -> AnalyzeResult:
     """Run Stage 1 vulnerability detection on a dataset.
 
     This is the clean wrapper around experiment.py's run_experiment() logic,
     accepting file paths instead of dataset names. Stage 1 only — for Stage 2
     verification use ``core.verifier.run_verification()``.
+
+    Checkpoints are always enabled. Per-unit results are saved to
+    ``{output_dir}/analyze_checkpoints/`` so interrupted runs resume
+    automatically.
 
     Args:
         dataset_path: Path to dataset.json produced by a parser.
@@ -111,12 +292,14 @@ def run_analysis(
         repo_path: Path to the repository (for context correction).
         limit: Max number of units to analyze.
         model: "opus" or "sonnet".
-        exploitable_only: If True, only analyze units classified as exploitable
-            by the agentic enhancer (requires enhanced dataset).
-        checkpoint_path: Path to save/resume checkpoint. Auto-generated if None.
-        fresh: If True, delete existing checkpoint and reanalyze all units.
-        skip_errors: If True, skip errored units instead of retrying them.
-            By default, errored units are automatically retried on re-run.
+        exploitable_filter: Filter by enhancement classification. Options:
+            None (default) — no filtering, analyze all units.
+            "all" — keep exploitable + vulnerable_internal (recommended).
+            "strict" — keep exploitable only (use after parser fixes).
+        checkpoint_path: Path to checkpoint directory. If None, auto-derived
+            from output_dir.
+        workers: Number of parallel workers (default: 8).
+        backoff_seconds: Seconds to wait on rate limit before retry (default: 30).
 
     Returns:
         AnalyzeResult with results path, metrics, and usage.
@@ -125,47 +308,15 @@ def run_analysis(
 
     results_path = os.path.join(output_dir, "results.json")
 
-    # Auto-generate checkpoint path
+    # Configure global rate limiter
+    from utilities.rate_limiter import configure_rate_limiter
+    configure_rate_limiter(backoff_seconds=float(backoff_seconds))
+
+    # Set up checkpoint
     if checkpoint_path is None:
-        checkpoint_path = os.path.join(output_dir, "analyze_checkpoint.json")
-
-    # Validate flag combinations
-    if fresh and skip_errors:
-        raise ValueError("Cannot use both --fresh and --skip-errors")
-
-    # Handle fresh mode
-    if fresh:
-        if os.path.exists(checkpoint_path):
-            os.remove(checkpoint_path)
-    else:
-        # Skip-when-already-complete: output exists and no checkpoint means previous run succeeded
-        has_checkpoint = os.path.exists(checkpoint_path)
-        if os.path.exists(results_path) and not has_checkpoint:
-            # Check if there are errored units worth retrying
-            experiment = read_json(results_path)
-            error_count = sum(
-                1 for r in experiment.get("results", [])
-                if r.get("verdict") == "ERROR"
-            )
-
-            if error_count > 0 and not skip_errors:
-                # Copy completed results to checkpoint path so the resume
-                # logic re-processes errored units. This works because
-                # results.json and the checkpoint format share the same
-                # top-level keys ("results", "code_by_route").
-                shutil.copy2(results_path, checkpoint_path)
-                print(f"[Analyze] Retrying {error_count} errored units from: {results_path}", file=sys.stderr)
-            else:
-                print(f"[Analyze] Already complete: {results_path}", file=sys.stderr)
-                print("[Analyze] Use --fresh to reanalyze all units from scratch.", file=sys.stderr)
-
-                metrics = _recount_metrics(experiment.get("results", []))
-
-                return AnalyzeResult(
-                    results_path=results_path,
-                    metrics=metrics,
-                    usage=UsageInfo(),
-                )
+        checkpoint_path = os.path.join(output_dir, "analyze_checkpoints")
+    checkpoint = StepCheckpoint("Analyze", output_dir)
+    checkpoint.dir = checkpoint_path
 
     # Reset tracking for this analysis run
     tracking.reset_tracking()
@@ -193,156 +344,147 @@ def run_analysis(
 
     units = dataset.get("units", [])
 
-    # Optional: filter to exploitable units only (requires enhanced dataset)
-    if exploitable_only:
+    # Optional: filter by enhancement security classification
+    if exploitable_filter:
         original_count = len(units)
+        if exploitable_filter == "strict":
+            keep = ("exploitable",)
+        else:  # "all" — default when filtering is enabled
+            keep = ("exploitable", "vulnerable_internal")
         units = [
             u for u in units
-            if u.get("agent_context", {}).get("security_classification") in ("exploitable", "vulnerable")
+            if u.get("agent_context", {}).get("security_classification") in keep
         ]
-        print(f"[Analyze] Exploitable filter: {original_count} -> {len(units)} units", file=sys.stderr)
+        print(f"[Analyze] Exploitable filter ({exploitable_filter}): {original_count} -> {len(units)} units", file=sys.stderr)
 
     if limit:
         units = units[:limit]
 
-    # --- Stage 1: Detection ---
-    results = []
-    code_by_route = {}
-    counts = {
-        "vulnerable": 0,
-        "bypassable": 0,
-        "inconclusive": 0,
-        "insufficient_context": 0,
-        "protected": 0,
-        "safe": 0,
-        "errors": 0,
-    }
-
-    # Load checkpoint if resuming
-    completed_ids = set()
-    if checkpoint_path and os.path.exists(checkpoint_path):
-        try:
-            cp = read_json(checkpoint_path)
-            results = cp.get("results", [])
-            code_by_route = cp.get("code_by_route", {})
-            if not skip_errors:
-                # Filter out errored results so they get reprocessed.
-                # This zeroes their counts; they'll be recounted after reprocessing.
-                results = [r for r in results if r.get("verdict") != "ERROR"]
-            completed_ids = {r["unit_id"] for r in results}
-            # Recount from checkpoint
-            for r in results:
-                finding = r.get("finding", "error")
-                if finding in counts:
-                    counts[finding] += 1
-                elif r.get("verdict") == "ERROR":
-                    counts["errors"] += 1
-            # Restore cost accumulator from checkpoint
-            cp_token_usage = cp.get("token_usage")
-            if cp_token_usage:
-                get_global_tracker().restore_from(cp_token_usage)
-
-            print(f"[Analyze] Resuming: {len(completed_ids)} units already done", file=sys.stderr)
-        except (json.JSONDecodeError, OSError):
-            # Corrupt checkpoint — start fresh
-            print("[Analyze] Corrupt checkpoint, starting fresh", file=sys.stderr)
-            results = []
-            code_by_route = {}
-            completed_ids = set()
-
-    # Set up progress reporter with resumed offset
+    total = len(units)
     tracker = get_global_tracker()
-    progress = ProgressReporter("Analyze", len(units), tracker=tracker, completed=len(completed_ids))
+    print(f"[Analyze] Analyzing {total} units...", file=sys.stderr)
 
-    print(f"[Analyze] Analyzing {len(units)} units (concurrency={concurrency})...", file=sys.stderr)
-
-    # Filter to only units that need processing
-    pending_units = []
-    for i, unit in enumerate(units):
-        uid = unit.get("id", f"unit_{i}")
-        if uid in completed_ids:
-            print(f"  {uid} -> (resumed)", file=sys.stderr)
-            continue
-        pending_units.append(unit)
-
-    # Per-thread client/corrector to avoid last_call race on shared AnthropicClient.
-    # Using threading.local() so each thread creates once and reuses.
-    _thread_local = threading.local()
-
-    def _analyze_one(unit):
-        """Process a single unit (called from worker thread).
-
-        Returns (result_dict, elapsed_seconds) tuple.
-        """
-        start = time.monotonic()
-        if not hasattr(_thread_local, "client"):
-            _thread_local.client = AnthropicClient(model=model_id)
-            _thread_local.corrector = JSONCorrector(_thread_local.client)
-        result = analyze_unit(
-            _thread_local.client, unit,
-            use_multifile=True,
-            json_corrector=_thread_local.corrector,
-            app_context=app_context,
-        )
-        return (result, time.monotonic() - start)
-
-    def _on_complete(unit, analyze_output):
-        """Called under lock after successful analysis.
-
-        All mutations to shared state (results, counts, code_by_route,
-        checkpoint) happen here under run_parallel's lock.
-        """
-        result, unit_elapsed = analyze_output
-        uid = unit.get("id", "unknown")
-        result["unit_id"] = uid
-        if not result.get("finding") and result.get("verdict"):
-            result["finding"] = result["verdict"].lower()
-
-        results.append(result)
-
-        route_key = result.get("route_key", uid)
-        code_field = unit.get("code", {})
-        if isinstance(code_field, dict):
-            code_by_route[route_key] = code_field.get("primary_code", "")
+    # Initialize summary tracking for _summary.json
+    # Count checkpointed units to seed the counters and sum existing usage
+    _existing = checkpoint.load()
+    _summary_completed = 0
+    _summary_errors = 0
+    _summary_error_breakdown = {}
+    _summary_input_tokens = 0
+    _summary_output_tokens = 0
+    _summary_cost_usd = 0.0
+    for _uid, _cp in _existing.items():
+        _r = _cp.get("result", {})
+        if _r.get("verdict") == "ERROR" or _r.get("finding") == "error":
+            _summary_errors += 1
+            _summary_error_breakdown["api"] = _summary_error_breakdown.get("api", 0) + 1
         else:
-            code_by_route[route_key] = code_field
+            _summary_completed += 1
+        _cp_usage = _cp.get("usage", {})
+        _summary_input_tokens += _cp_usage.get("input_tokens", 0)
+        _summary_output_tokens += _cp_usage.get("output_tokens", 0)
+        _summary_cost_usd += _cp_usage.get("cost_usd", 0.0)
 
-        finding = result.get("finding", "error")
-        if finding in counts:
-            counts[finding] += 1
-        elif result.get("verdict") == "ERROR":
-            counts["errors"] += 1
+    def _usage_dict():
+        return {"input_tokens": _summary_input_tokens,
+                "output_tokens": _summary_output_tokens,
+                "cost_usd": round(_summary_cost_usd, 6)}
 
-        if checkpoint_path:
-            _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id, tracker)
-        progress.report(unit_label=uid, detail=finding, unit_elapsed=unit_elapsed)
+    # Inject prior usage into tracker so step_report captures the total
+    if _summary_input_tokens or _summary_output_tokens:
+        tracker.add_prior_usage(
+            _summary_input_tokens, _summary_output_tokens, _summary_cost_usd)
 
-    def _on_error(unit, exc):
-        """Called under lock when analysis raises."""
-        uid = unit.get("id", "unknown")
-        print(f"  {uid} -> ERROR: {exc}", file=sys.stderr)
-        counts["errors"] += 1
-        results.append({
-            "unit_id": uid,
-            "verdict": "ERROR",
-            "finding": "error",
-            "error": str(exc),
-        })
-        if checkpoint_path:
-            _save_analyze_checkpoint(checkpoint_path, results, code_by_route, counts, dataset_path, model_id, tracker)
-        progress.report(unit_label=uid, detail="error")
+    # Write initial summary
+    checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                             _summary_error_breakdown, phase="in_progress",
+                             usage=_usage_dict())
 
-    run_parallel(
-        items=pending_units,
-        process_fn=_analyze_one,
-        concurrency=concurrency,
-        on_complete=_on_complete,
-        on_error=_on_error,
+    def _summary_callback(finding, usage=None):
+        """Update summary counters after each unit. Called from main thread."""
+        nonlocal _summary_completed, _summary_errors, _summary_error_breakdown
+        nonlocal _summary_input_tokens, _summary_output_tokens, _summary_cost_usd
+        if finding == "error":
+            _summary_errors += 1
+            _summary_error_breakdown["api"] = _summary_error_breakdown.get("api", 0) + 1
+        else:
+            _summary_completed += 1
+        if usage:
+            _summary_input_tokens += usage.get("input_tokens", 0)
+            _summary_output_tokens += usage.get("output_tokens", 0)
+            _summary_cost_usd += usage.get("cost_usd", 0.0)
+        checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                                 _summary_error_breakdown, phase="in_progress",
+                                 usage=_usage_dict())
+
+    # --- Stage 1: Detection ---
+    results, code_by_route = _run_detection(
+        units, client, json_corrector, app_context, workers, checkpoint=checkpoint,
+        summary_callback=_summary_callback,
     )
 
-    progress.finish()
+    # Auto-retry failed units with transient errors (rate limit, connection, timeout, 5xx)
+    retryable_indices = [
+        i for i, r in enumerate(results)
+        if r and is_retryable_error(r.get("error"))
+    ]
+    if retryable_indices:
+        rate_limiter = get_rate_limiter()
+        backoff = rate_limiter.time_until_ready()
+        if backoff > 0:
+            print(f"[Analyze] Retrying {len(retryable_indices)} failed units "
+                  f"(waiting {backoff:.0f}s for rate limit to clear)...", file=sys.stderr)
+            rate_limiter.wait_if_needed()
+        else:
+            print(f"[Analyze] Retrying {len(retryable_indices)} failed units (transient errors)...",
+                  file=sys.stderr)
+
+        # Retry sequentially to avoid re-triggering rate limit
+        for i in retryable_indices:
+            unit = units[i]
+            out = _process_unit(client, unit, i, json_corrector, app_context)
+            results[i] = out["result"]
+            code_by_route[out["route_key"]] = out["code_for_route"]
+
+            # Update summary: retry succeeded -> flip error to completed
+            if out["finding"] != "error":
+                _summary_errors = max(0, _summary_errors - 1)
+                _summary_completed += 1
+            retry_usage = out.get("usage", {})
+            _summary_input_tokens += retry_usage.get("input_tokens", 0)
+            _summary_output_tokens += retry_usage.get("output_tokens", 0)
+            _summary_cost_usd += retry_usage.get("cost_usd", 0.0)
+            checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                                     _summary_error_breakdown, phase="in_progress",
+                                     usage=_usage_dict())
+
+            # Update checkpoint
+            if checkpoint is not None:
+                uid = out["result"].get("unit_id", f"unit_{i}")
+                cp_data = {
+                    "result": out["result"],
+                    "route_key": out["route_key"],
+                    "code_for_route": out["code_for_route"],
+                }
+                if out.get("usage"):
+                    cp_data["usage"] = out["usage"]
+                checkpoint.save(uid, cp_data)
+
+            print(f"  Retry {i+1}/{len(retryable_indices)}: {out['finding']} (retry)",
+                  file=sys.stderr, flush=True)
+
+    # Write final summary with phase="done"
+    checkpoint.write_summary(total, _summary_completed, _summary_errors,
+                             _summary_error_breakdown, phase="done",
+                             usage=_usage_dict())
 
     tracking.log_usage("Stage 1")
+
+    # Filter out None entries (units not reached due to interrupt)
+    results = [r for r in results if r is not None]
+
+    # Compute verdict counts from results
+    counts = _count_verdicts(results)
 
     # --- Stage 1 Consistency Check ---
     consistency_corrections = 0
@@ -356,14 +498,7 @@ def run_analysis(
                 consistency_corrections += 1
         if consistency_corrections:
             print(f"  Consistency corrections: {consistency_corrections}", file=sys.stderr)
-            # Recount after corrections
-            counts = {k: 0 for k in counts}
-            for r in results:
-                f = r.get("finding", r.get("verdict", "error").lower())
-                if f in counts:
-                    counts[f] += 1
-                elif r.get("verdict") == "ERROR":
-                    counts["errors"] += 1
+            counts = _count_verdicts(results)
     except ImportError:
         print("[Analyze] Stage 1 consistency check not available, skipping.", file=sys.stderr)
     except Exception as e:
@@ -387,11 +522,10 @@ def run_analysis(
 
     atomic_write_json(results_path, experiment_result)
 
-    # Clean up checkpoint on success
-    if checkpoint_path and os.path.exists(checkpoint_path):
-        os.remove(checkpoint_path)
-
     print(f"\n[Analyze] Results written to {results_path}", file=sys.stderr)
+
+    # Checkpoints are preserved as a permanent artifact alongside results.
+    # Final summary (phase="done") was already written before result writing.
 
     # Build return value
     usage = tracking.get_usage()

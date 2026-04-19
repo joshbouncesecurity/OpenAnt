@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/knostic/open-ant-cli/internal/checkpoint"
 	"github.com/knostic/open-ant-cli/internal/output"
 	"github.com/knostic/open-ant-cli/internal/python"
 	"github.com/spf13/cobra"
@@ -28,9 +29,9 @@ var (
 	enhanceAnalyzerOutput string
 	enhanceRepoPath       string
 	enhanceMode           string
-	enhanceFresh          bool
-	enhanceSkipErrors     bool
-	enhanceConcurrency    int
+	enhanceCheckpoint     string
+	enhanceWorkers        int
+	enhanceBackoff        int
 )
 
 func init() {
@@ -38,17 +39,12 @@ func init() {
 	enhanceCmd.Flags().StringVar(&enhanceAnalyzerOutput, "analyzer-output", "", "Path to analyzer_output.json (required for agentic mode)")
 	enhanceCmd.Flags().StringVar(&enhanceRepoPath, "repo-path", "", "Path to the repository (required for agentic mode)")
 	enhanceCmd.Flags().StringVar(&enhanceMode, "mode", "agentic", "Enhancement mode: agentic (thorough) or single-shot (fast)")
-	enhanceCmd.Flags().BoolVar(&enhanceFresh, "fresh", false, "Ignore checkpoint and reprocess all units from scratch")
-	enhanceCmd.Flags().BoolVar(&enhanceSkipErrors, "skip-errors", false, "Skip errored units instead of retrying them (errors are retried by default)")
-	enhanceCmd.Flags().IntVarP(&enhanceConcurrency, "concurrency", "j", 4, "Number of concurrent LLM calls (default: 4)")
+	enhanceCmd.Flags().StringVar(&enhanceCheckpoint, "checkpoint", "", "Path to save/resume checkpoint (agentic mode)")
+	enhanceCmd.Flags().IntVar(&enhanceWorkers, "workers", 8, "Number of parallel workers for LLM steps (default: 8)")
+	enhanceCmd.Flags().IntVar(&enhanceBackoff, "backoff", 30, "Seconds to wait when rate-limited (default: 30)")
 }
 
 func runEnhance(cmd *cobra.Command, args []string) {
-	if enhanceConcurrency < 1 {
-		fmt.Fprintln(os.Stderr, "Error: --concurrency must be >= 1")
-		os.Exit(1)
-	}
-
 	datasetPath, ctx, err := resolveFileArg(args, "dataset.json")
 	if err != nil {
 		output.PrintError(err.Error())
@@ -74,6 +70,18 @@ func runEnhance(cmd *cobra.Command, args []string) {
 		os.Exit(2)
 	}
 
+	// Auto-detect checkpoints from a previous interrupted run
+	if enhanceCheckpoint == "" && ctx != nil {
+		if cpInfo := checkpoint.DetectViaPython(rt.Path, ctx.ScanDir, "enhance"); cpInfo != nil {
+			if checkpoint.PromptResume(cpInfo, "enhance", quiet) {
+				enhanceCheckpoint = cpInfo.Dir
+			} else {
+				// User chose fresh start — remove old checkpoints
+				_ = checkpoint.Clean(cpInfo.Dir)
+			}
+		}
+	}
+
 	pyArgs := []string{"enhance", datasetPath}
 	if enhanceOutput != "" {
 		pyArgs = append(pyArgs, "--output", enhanceOutput)
@@ -87,13 +95,15 @@ func runEnhance(cmd *cobra.Command, args []string) {
 	if enhanceMode != "agentic" {
 		pyArgs = append(pyArgs, "--mode", enhanceMode)
 	}
-	if enhanceFresh {
-		pyArgs = append(pyArgs, "--fresh")
+	if enhanceCheckpoint != "" {
+		pyArgs = append(pyArgs, "--checkpoint", enhanceCheckpoint)
 	}
-	if enhanceSkipErrors {
-		pyArgs = append(pyArgs, "--skip-errors")
+	if enhanceWorkers != 8 {
+		pyArgs = append(pyArgs, "--workers", fmt.Sprintf("%d", enhanceWorkers))
 	}
-	pyArgs = append(pyArgs, "--concurrency", fmt.Sprintf("%d", enhanceConcurrency))
+	if enhanceBackoff != 30 {
+		pyArgs = append(pyArgs, "--backoff", fmt.Sprintf("%d", enhanceBackoff))
+	}
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, requireAPIKey())
 	if err != nil {
@@ -101,7 +111,9 @@ func runEnhance(cmd *cobra.Command, args []string) {
 		os.Exit(2)
 	}
 
-	if jsonOutput {
+	if result.Envelope.Status == "interrupted" {
+		os.Exit(130)
+	} else if jsonOutput {
 		output.PrintJSON(result.Envelope)
 	} else if result.Envelope.Status == "success" {
 		if data, ok := result.Envelope.Data.(map[string]any); ok {
