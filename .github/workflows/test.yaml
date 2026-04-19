@@ -1,4 +1,5 @@
 name: tests
+# Retrigger for warm-cache timing measurement.
 on:
   push:
     branches: [master]
