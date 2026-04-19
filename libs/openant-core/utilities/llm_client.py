@@ -91,6 +91,10 @@ async def _run_query(prompt, options, label=""):
     Uses the async context manager approach (NOT the query() generator)
     to avoid anyio cancel-scope errors.
 
+    If the SDK reports an API error via AssistantMessage.error, this raises
+    the corresponding openant.utilities.sdk_errors exception class. Rate
+    limits additionally notify the GlobalRateLimiter so all workers back off.
+
     Args:
         prompt: The prompt text to send.
         options: ClaudeAgentOptions instance.
@@ -98,9 +102,16 @@ async def _run_query(prompt, options, label=""):
 
     Returns:
         Tuple of (ResultMessage, last_assistant_text).
+
+    Raises:
+        utilities.sdk_errors.OpenAntLLMError: subclass matching the SDK's
+            reported AssistantMessageError (RateLimitError, AuthError,
+            BillingError, InvalidRequestError, ServerError, UnknownLLMError).
     """
     import time
     from claude_agent_sdk import ClaudeSDKClient, AssistantMessage, ResultMessage
+
+    from .sdk_errors import error_from_kind, RateLimitError
 
     _verbose = os.getenv("OPENANT_VERBOSE", "").lower() == "true"
     tag = f"[SDK:{label}]" if label else "[SDK]"
@@ -127,6 +138,22 @@ async def _run_query(prompt, options, label=""):
         turn_count = 0
         async for message in client.receive_response():
             if isinstance(message, AssistantMessage):
+                # SDK signals API-level errors on AssistantMessage.error.
+                # Raise the typed openant exception; rate-limit errors also
+                # notify the global limiter so all threads back off.
+                msg_error = getattr(message, "error", None)
+                if msg_error:
+                    text_for_context = ""
+                    for block in getattr(message, "content", []):
+                        if type(block).__name__ == "TextBlock":
+                            text_for_context = block.text
+                            break
+                    exc = error_from_kind(msg_error, text_for_context)
+                    if isinstance(exc, RateLimitError):
+                        # No retry-after from SDK; default backoff applies.
+                        get_rate_limiter().report_rate_limit(0)
+                    raise exc
+
                 turn_count += 1
                 parts = []
                 tool_names = []
