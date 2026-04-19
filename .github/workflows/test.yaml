@@ -23,7 +23,6 @@ jobs:
           python-version: "3.11"
           cache: "pip"
           cache-dependency-path: |
-            libs/openant-core/requirements.txt
             libs/openant-core/pyproject.toml
 
       - name: Set up Node.js
@@ -35,7 +34,7 @@ jobs:
 
       - name: Install Python dependencies
         working-directory: libs/openant-core
-        run: pip install -r requirements.txt && pip install ".[dev]"
+        run: pip install -e ".[dev]"
 
       - name: Cache JS parser node_modules
         id: cache-node-modules
@@ -51,7 +50,7 @@ jobs:
 
       - name: Run Python and parser tests
         working-directory: libs/openant-core
-        run: python -m pytest tests/test_token_tracker.py tests/test_parser_adapter.py tests/test_python_parser.py tests/test_js_parser.py -v
+        run: python -m pytest tests/test_token_tracker.py tests/test_parser_adapter.py tests/test_python_parser.py tests/test_js_parser.py tests/test_declared_dependencies.py -v
 
   go-tests:
     name: Go build + integration (${{ matrix.os }})
@@ -79,7 +78,6 @@ jobs:
           python-version: "3.11"
           cache: "pip"
           cache-dependency-path: |
-            libs/openant-core/requirements.txt
             libs/openant-core/pyproject.toml
 
       - name: Set up Node.js
@@ -115,7 +113,7 @@ jobs:
 
       - name: Install Python dependencies
         working-directory: libs/openant-core
-        run: pip install -r requirements.txt && pip install ".[dev]"
+        run: pip install -e ".[dev]"
 
       - name: Cache JS parser node_modules
         id: cache-node-modules
