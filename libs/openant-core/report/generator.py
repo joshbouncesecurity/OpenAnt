@@ -8,7 +8,6 @@ import json
 import os
 import re
 import sys
-import anthropic
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -20,32 +19,29 @@ if _OPENANT_CORE_ROOT not in sys.path:
 from utilities.model_config import MODEL_PRIMARY, MODEL_AUXILIARY  # noqa: E402
 
 from .schema import validate_pipeline_output, ValidationError
+from utilities.llm_client import AnthropicClient
 
 load_dotenv()
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 MODEL = MODEL_PRIMARY
 
-# Pricing per million tokens. Aliased opus keys retained for backward
-# compatibility with any cached/legacy responses that recorded the literal.
-_PRICING = {
-    MODEL_PRIMARY: {"input": 15.00, "output": 75.00},
-    MODEL_AUXILIARY: {"input": 3.00, "output": 15.00},
-}
-_DEFAULT_PRICING = {"input": 3.00, "output": 15.00}
+def _usage_from_last_call(last_call: dict | None) -> dict:
+    """Adapt TokenTracker.record_call output to the report's usage shape.
 
-
-def _extract_usage(response, model: str = MODEL) -> dict:
-    """Extract usage info from an Anthropic API response."""
-    usage = response.usage
-    pricing = _PRICING.get(model, _DEFAULT_PRICING)
-    input_cost = (usage.input_tokens / 1_000_000) * pricing["input"]
-    output_cost = (usage.output_tokens / 1_000_000) * pricing["output"]
+    TokenTracker returns {model, input_tokens, output_tokens, cost_usd};
+    callers here want {input_tokens, output_tokens, total_tokens, cost_usd}.
+    Returns zeros when last_call is None (e.g. if the SDK didn't surface usage).
+    """
+    if not last_call:
+        return {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "cost_usd": 0.0}
+    it = last_call.get("input_tokens", 0)
+    ot = last_call.get("output_tokens", 0)
     return {
-        "input_tokens": usage.input_tokens,
-        "output_tokens": usage.output_tokens,
-        "total_tokens": usage.input_tokens + usage.output_tokens,
-        "cost_usd": round(input_cost + output_cost, 6),
+        "input_tokens": it,
+        "output_tokens": ot,
+        "total_tokens": it + ot,
+        "cost_usd": last_call.get("cost_usd", 0.0),
     }
 
 
@@ -143,20 +139,14 @@ def generate_summary_report(pipeline_data: dict) -> tuple[str, dict]:
         output_tokens, total_tokens, cost_usd.
     """
     _check_api_key()
-    client = anthropic.Anthropic()
+    client = AnthropicClient(model=MODEL)
 
     summary_data = _compact_for_summary(pipeline_data)
     system_prompt = load_prompt("system")
     user_prompt = load_prompt("summary").replace("{pipeline_data}", json.dumps(summary_data, indent=2))
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
-    )
-
-    return response.content[0].text, _extract_usage(response)
+    text = client.analyze_sync(user_prompt, system=system_prompt, max_tokens=4096)
+    return text, _usage_from_last_call(client.get_last_call())
 
 
 def _splice_code_section(llm_output: str, code_section: str) -> str:
@@ -206,7 +196,7 @@ def generate_disclosure(vulnerability_data: dict, product_name: str) -> tuple[st
         (disclosure_text, usage_dict)
     """
     _check_api_key()
-    client = anthropic.Anthropic()
+    client = AnthropicClient(model=MODEL)
 
     system_prompt = load_prompt("system")
 
@@ -225,17 +215,10 @@ def generate_disclosure(vulnerability_data: dict, product_name: str) -> tuple[st
         .replace("{vulnerability_data}", json.dumps(payload, indent=2), 1)
     )
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=4096,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
-    )
-
-    llm_output = response.content[0].text
+    llm_output = client.analyze_sync(user_prompt, system=system_prompt, max_tokens=4096)
     final_output = _splice_code_section(llm_output, code_section)
 
-    return final_output, _extract_usage(response)
+    return final_output, _usage_from_last_call(client.get_last_call())
 
 
 def generate_all(pipeline_path: str, output_dir: str) -> None:
