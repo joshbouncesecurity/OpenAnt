@@ -23,11 +23,19 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Callable, Optional
 
-import anthropic
+import anthropic  # Still used by shared_client below; removed in Step 5b once ContextAgent drops its client param.
 
 from .llm_client import AnthropicClient, TokenTracker, get_global_tracker, reset_global_tracker
 from .agentic_enhancer import RepositoryIndex, enhance_unit_with_agent, load_index_from_file
 from .rate_limiter import get_rate_limiter, is_rate_limit_error, is_retryable_error
+from .sdk_errors import (
+    AuthError,
+    BillingError,
+    InvalidRequestError,
+    RateLimitError,
+    ServerError,
+    UnknownLLMError,
+)
 
 # Avoid circular import — import checkpoint at usage site
 _StepCheckpoint = None
@@ -52,8 +60,21 @@ CONTEXT_ENHANCEMENT_MODEL = MODEL_AUXILIARY
 def _build_error_info(exc: Exception) -> dict:
     """Build a structured error dict from an exception.
 
-    Captures exception type, message, HTTP status, request ID, and
-    any agent iteration state attached by agent.py.
+    Maps utilities.sdk_errors classes onto the diagnostic shape
+    is_rate_limit_error() and is_retryable_error() expect:
+
+        {"type": "rate_limit" | "connection" | "timeout" |
+                 "api_status" | "auth" | "billing" | "invalid_request" |
+                 "unknown",
+         "exception_class": "...",
+         "message": "...",
+         ["agent_state": {...}]}
+
+    The pre-migration shape also carried request_id and retry_after from
+    anthropic response headers; the Claude Agent SDK doesn't surface those.
+    Callers that only check "type" (is_rate_limit_error, is_retryable_error)
+    keep working unchanged. Callers that read request_id/retry_after won't
+    find them any more — none in this codebase do.
     """
     info = {
         "type": "unknown",
@@ -61,24 +82,23 @@ def _build_error_info(exc: Exception) -> dict:
         "message": str(exc),
     }
 
-    # Anthropic SDK specific exceptions
-    if isinstance(exc, anthropic.APIConnectionError):
-        info["type"] = "connection"
-    elif isinstance(exc, anthropic.APITimeoutError):
-        info["type"] = "timeout"
-    elif isinstance(exc, anthropic.RateLimitError):
+    # SDK-layer errors raised by utilities.llm_client._run_query.
+    if isinstance(exc, RateLimitError):
         info["type"] = "rate_limit"
-        info["status_code"] = exc.status_code
-        if hasattr(exc, "response") and exc.response is not None:
-            info["request_id"] = exc.response.headers.get("request-id")
-            retry_after = exc.response.headers.get("retry-after")
-            if retry_after:
-                info["retry_after"] = retry_after
-    elif isinstance(exc, anthropic.APIStatusError):
+    elif isinstance(exc, AuthError):
+        info["type"] = "auth"
+    elif isinstance(exc, BillingError):
+        info["type"] = "billing"
+    elif isinstance(exc, ServerError):
+        # Treat as a 500-class error for is_retryable_error().
         info["type"] = "api_status"
-        info["status_code"] = exc.status_code
-        if hasattr(exc, "response") and exc.response is not None:
-            info["request_id"] = exc.response.headers.get("request-id")
+        info["status_code"] = 500
+    elif isinstance(exc, InvalidRequestError):
+        # 400-class — caller bug, not retryable.
+        info["type"] = "api_status"
+        info["status_code"] = 400
+    elif isinstance(exc, UnknownLLMError):
+        info["type"] = "unknown"
 
     # Agent iteration state (attached by agent.py)
     agent_state = getattr(exc, "agent_state", None)
