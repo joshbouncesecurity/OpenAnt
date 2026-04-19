@@ -1,5 +1,4 @@
 name: tests
-# Retrigger for warm-cache timing measurement.
 on:
   push:
     branches: [master]
@@ -20,6 +19,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Exclude workspace + toolchain caches from Windows Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $paths = @(
+            $env:GITHUB_WORKSPACE,
+            "$env:LOCALAPPDATA\go-build",
+            "$env:USERPROFILE\go\pkg\mod",
+            "$env:LOCALAPPDATA\npm-cache",
+            "$env:APPDATA\npm-cache"
+          )
+          foreach ($p in $paths) {
+            Add-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue
+          }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -69,6 +83,21 @@ jobs:
 
     steps:
       - uses: actions/checkout@v5
+
+      - name: Exclude workspace + toolchain caches from Windows Defender
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $paths = @(
+            $env:GITHUB_WORKSPACE,
+            "$env:LOCALAPPDATA\go-build",
+            "$env:USERPROFILE\go\pkg\mod",
+            "$env:LOCALAPPDATA\npm-cache",
+            "$env:APPDATA\npm-cache"
+          )
+          foreach ($p in $paths) {
+            Add-MpPreference -ExclusionPath $p -ErrorAction SilentlyContinue
+          }
 
       - name: Set up Go
         uses: actions/setup-go@v5
