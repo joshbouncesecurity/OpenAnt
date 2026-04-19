@@ -622,10 +622,9 @@ def cmd_report_data(args):
     and step reports — everything display-ready.
     """
     import html as html_mod
-    import anthropic
     from core.schemas import success, error
     from core.step_report import step_context
-    from utilities.llm_client import get_global_tracker
+    from utilities.llm_client import AnthropicClient, get_global_tracker
 
     results_path = args.results
     dataset_path = args.dataset
@@ -845,13 +844,9 @@ Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not 
 {findings_text}
 """
                 print("[Report] Generating remediation guidance (LLM)...", file=sys.stderr)
-                client = anthropic.Anthropic()
-                response = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=4096,
-                    messages=[{"role": "user", "content": prompt}],
-                )
-                remediation_html = response.content[0].text
+                # AnthropicClient handles usage tracking via the global TokenTracker.
+                remediation_client = AnthropicClient(model="claude-sonnet-4-20250514")
+                remediation_html = remediation_client.analyze_sync(prompt, max_tokens=4096)
 
                 # Post-process: linkify finding references like #4, #12-#14
                 import re
@@ -860,15 +855,11 @@ Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not 
                     return f'<a href="#finding-{num}" class="finding-ref">#{num}</a>'
                 remediation_html = re.sub(r'#(\d+)', _linkify_finding, remediation_html)
 
-                # Track usage
-                usage = response.usage
-                tracker = get_global_tracker()
-                tracker.record_call(
-                    model="claude-sonnet-4-20250514",
-                    input_tokens=usage.input_tokens,
-                    output_tokens=usage.output_tokens,
+                last = remediation_client.get_last_call() or {}
+                print(
+                    f"  Remediation cost: ${last.get('cost_usd', 0.0):.4f}",
+                    file=sys.stderr,
                 )
-                print(f"  Remediation cost: ${(usage.input_tokens / 1e6) * 3.0 + (usage.output_tokens / 1e6) * 15.0:.4f}", file=sys.stderr)
 
             # --- Step reports ---
             step_reports_data = []
