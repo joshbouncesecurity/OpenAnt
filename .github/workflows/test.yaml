@@ -4,10 +4,6 @@ on:
     branches: [master]
   pull_request:
 
-env:
-  # setup-python@v5 and setup-go@v5 don't have Node.js 24 releases yet
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   python-tests:
     name: Python tests (${{ matrix.os }})
@@ -18,15 +14,15 @@ jobs:
         os: ${{ github.repository == 'knostic/OpenAnt' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
 
@@ -51,21 +47,21 @@ jobs:
         os: ${{ github.repository == 'knostic/OpenAnt' && fromJSON('["ubuntu-latest", "macos-latest", "windows-latest"]') || fromJSON('["ubuntu-latest"]') }}
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: apps/openant-cli/go.mod
           cache-dependency-path: apps/openant-cli/go.sum
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.11"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@v6
         with:
           node-version: "22"
 
