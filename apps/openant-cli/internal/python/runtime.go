@@ -46,9 +46,19 @@ func venvPython() string {
 // DetectRuntime finds a suitable Python 3.11+ installation.
 //
 // Search order:
-//  1. Managed venv at ~/.openant/venv/ (if it exists and is valid)
-//  2. python3 / python on PATH
+//  1. OPENANT_PYTHON env var (if set and valid)
+//  2. Managed venv at ~/.openant/venv/ (if it exists and is valid)
+//  3. python3 / python on PATH
 func DetectRuntime() (*RuntimeInfo, error) {
+	// Strategy 0: honour explicit override via OPENANT_PYTHON env var
+	if override := os.Getenv("OPENANT_PYTHON"); override != "" {
+		if info, err := checkPython(override); err == nil {
+			if info.Major > MinPythonMajor || (info.Major == MinPythonMajor && info.Minor >= MinPythonMinor) {
+				return info, nil
+			}
+		}
+	}
+
 	// Strategy 1: check managed venv
 	vp := venvPython()
 	if fileExists(vp) {
