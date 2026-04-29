@@ -8,6 +8,7 @@ jobs:
   python-tests:
     name: Python tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -21,7 +22,9 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: libs/openant-core/requirements.txt
+          cache-dependency-path: |
+            libs/openant-core/requirements.txt
+            libs/openant-core/pyproject.toml
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -32,7 +35,7 @@ jobs:
 
       - name: Install Python dependencies
         working-directory: libs/openant-core
-        run: pip install -r requirements.txt && pip install pytest
+        run: pip install -r requirements.txt && pip install ".[dev]"
 
       - name: Cache JS parser node_modules
         id: cache-node-modules
@@ -53,6 +56,9 @@ jobs:
   go-tests:
     name: Go build + integration (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    env:
+      OPENANT_PYTHON: python
     strategy:
       fail-fast: false
       matrix:
@@ -72,7 +78,9 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: libs/openant-core/requirements.txt
+          cache-dependency-path: |
+            libs/openant-core/requirements.txt
+            libs/openant-core/pyproject.toml
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -107,7 +115,7 @@ jobs:
 
       - name: Install Python dependencies
         working-directory: libs/openant-core
-        run: pip install -r requirements.txt && pip install pytest
+        run: pip install -r requirements.txt && pip install ".[dev]"
 
       - name: Cache JS parser node_modules
         id: cache-node-modules
