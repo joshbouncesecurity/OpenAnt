@@ -128,7 +128,10 @@ class TestParse:
                 else:
                     pytest.fail("Go CLI resolved wrong Python (missing required packages)")
             if "UnicodeEncodeError" in result.stderr:
-                pytest.skip("Pre-existing Unicode bug in JS test_pipeline.py on Windows")
+                if sys.platform == "win32":
+                    pytest.skip("Pre-existing Unicode bug in JS test_pipeline.py on Windows")
+                else:
+                    pytest.fail("UnicodeEncodeError from JS parser on non-Windows (unexpected regression)")
         assert result.returncode == 0
         envelope = json.loads(result.stdout)
         assert envelope["status"] == "success"
