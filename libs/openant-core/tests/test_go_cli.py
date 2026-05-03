@@ -29,11 +29,14 @@ def run_cli(*args, env_override=None):
     # Don't let the test hit any real API
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("OPENANT_LOCAL_CLAUDE", None)
-    # Scrub OPENANT_PYTHON so a developer's shell-exported override
-    # doesn't silently change which interpreter the Go CLI resolves
-    # under test. Tests that need a specific interpreter can re-set it
-    # via env_override.
-    env.pop("OPENANT_PYTHON", None)
+    # Pin the Go CLI to the exact interpreter running pytest. This:
+    #   - blocks a developer's shell-exported OPENANT_PYTHON from changing
+    #     which interpreter the Go CLI resolves under test;
+    #   - guarantees the Go CLI uses the same Python that the test setup
+    #     pip-installed `openant` into, instead of whatever `python3` happens
+    #     to resolve to on the runner's PATH (which is not the same Python
+    #     on macOS/Windows GitHub runners).
+    env["OPENANT_PYTHON"] = sys.executable
     if env_override:
         env.update(env_override)
     return subprocess.run(
