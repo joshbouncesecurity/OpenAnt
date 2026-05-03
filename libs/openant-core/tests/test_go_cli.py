@@ -29,6 +29,11 @@ def run_cli(*args, env_override=None):
     # Don't let the test hit any real API
     env.pop("ANTHROPIC_API_KEY", None)
     env.pop("OPENANT_LOCAL_CLAUDE", None)
+    # Scrub OPENANT_PYTHON so a developer's shell-exported override
+    # doesn't silently change which interpreter the Go CLI resolves
+    # under test. Tests that need a specific interpreter can re-set it
+    # via env_override.
+    env.pop("OPENANT_PYTHON", None)
     if env_override:
         env.update(env_override)
     return subprocess.run(
