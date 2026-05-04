@@ -94,7 +94,8 @@ def parse_repository(
         skip_tests: If True, exclude test files from parsing (default: True).
         name: Dataset name override (default: derived from repo path basename).
         fresh: If True, delete existing dataset.json before parsing so all
-            units are regenerated from scratch.
+            units are regenerated from scratch. Only dataset.json is deleted;
+            other artifacts in output_dir (e.g. analyzer outputs) are preserved.
 
     Returns:
         ParseResult with paths to generated files and stats.
@@ -109,9 +110,15 @@ def parse_repository(
 
     if fresh:
         dataset_path = os.path.join(output_dir, "dataset.json")
-        if os.path.exists(dataset_path):
+        # Use try/except instead of exists()+remove() to avoid a TOCTOU race
+        # if a concurrent --fresh run removes the file between the two calls.
+        # Only dataset.json is deleted; other artifacts (analyzer outputs, etc.)
+        # in output_dir are preserved.
+        try:
             os.remove(dataset_path)
             print("[Parser] --fresh: deleted existing dataset.json", file=sys.stderr)
+        except FileNotFoundError:
+            pass
 
     # Detect language if auto
     if language == "auto":

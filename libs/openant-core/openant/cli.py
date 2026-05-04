@@ -1040,7 +1040,7 @@ def main():
     parse_p.add_argument("--name", help="Dataset name (default: derived from repo path)")
     parse_p.add_argument("--diff-manifest", help="Path to diff_manifest.json; tags units with diff_selected")
     parse_p.add_argument("--fresh", action="store_true",
-                         help="Delete existing dataset and reparse from scratch (default: reuse existing units)")
+                         help="Delete existing dataset.json and reparse from scratch (default: reuse existing units; other artifacts preserved)")
     parse_p.set_defaults(func=cmd_parse)
 
     # ---------------------------------------------------------------

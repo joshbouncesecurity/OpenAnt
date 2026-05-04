@@ -46,7 +46,7 @@ func TestBuildParsePyArgsLevelForwarding(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			args := buildParsePyArgs("/repo", "/out", "", "auto", tc.level, "")
+			args := buildParsePyArgs("/repo", "/out", "", "auto", tc.level, "", false)
 			gotLevel, gotValue := findFlag(args, "--level")
 			if gotLevel != tc.wantLevel {
 				t.Errorf("--level present = %v, want %v (argv=%v)", gotLevel, tc.wantLevel, args)
@@ -59,7 +59,7 @@ func TestBuildParsePyArgsLevelForwarding(t *testing.T) {
 }
 
 func TestBuildParsePyArgsBaseline(t *testing.T) {
-	args := buildParsePyArgs("/repo", "/out", "org-repo-abc1234", "python", "exploitable", "/tmp/manifest.json")
+	args := buildParsePyArgs("/repo", "/out", "org-repo-abc1234", "python", "exploitable", "/tmp/manifest.json", false)
 	want := []string{
 		"parse", "/repo",
 		"--output", "/out",
@@ -131,6 +131,23 @@ func TestParseCmdFreshFlagParses(t *testing.T) {
 	}
 }
 
+func TestParsePyArgsIncludesFreshWhenSet(t *testing.T) {
+	args := buildParsePyArgs("/some/repo", "/out", "", "auto", "reachable", "", true)
+
+	found, _ := findFlag(args, "--fresh")
+	if !found {
+		t.Errorf("expected --fresh in pyArgs when fresh=true, got %v", args)
+	}
+}
+
+func TestParsePyArgsOmitsFreshWhenUnset(t *testing.T) {
+	args := buildParsePyArgs("/some/repo", "/out", "", "auto", "reachable", "", false)
+
+	found, _ := findFlag(args, "--fresh")
+	if found {
+		t.Errorf("did not expect --fresh in pyArgs when fresh=false, got %v", args)
+	}
+}
 func TestParseCmdIsRegisteredOnRoot(t *testing.T) {
 	var found *cobra.Command
 	for _, c := range rootCmd.Commands() {
