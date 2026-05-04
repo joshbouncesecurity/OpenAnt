@@ -166,7 +166,7 @@ class TestParse:
 class TestApiKeyHandling:
     def test_scan_requires_api_key(self, sample_python_repo):
         """Scan should fail without an API key."""
-        result = run_cli("scan", sample_python_repo)
+        result = run_cli("scan", sample_python_repo, "--skip-dynamic-test")
         output = result.stderr + result.stdout
         assert result.returncode != 0
         assert "api key" in output.lower()
