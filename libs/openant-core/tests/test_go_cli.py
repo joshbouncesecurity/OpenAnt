@@ -23,8 +23,12 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def run_cli(*args, env_override=None):
-    """Run the openant CLI binary and return the CompletedProcess."""
+def run_cli(*args, env_override=None, stdin_input=""):
+    """Run the openant CLI binary and return the CompletedProcess.
+
+    `stdin_input` defaults to "" (a piped, non-TTY stdin). Pass `stdin_input=None`
+    to inherit the parent's stdin instead.
+    """
     env = os.environ.copy()
     # Don't let the test hit any real API
     env.pop("ANTHROPIC_API_KEY", None)
@@ -45,6 +49,7 @@ def run_cli(*args, env_override=None):
         text=True,
         timeout=30,
         env=env,
+        input=stdin_input,
     )
 
 
@@ -199,6 +204,52 @@ class TestGenerateContext:
         output = result.stderr + result.stdout
         assert result.returncode != 0
         assert "mutually exclusive" in output.lower()
+
+    @pytest.mark.parametrize("mode", ["use", "merge", "ignore"])
+    def test_override_mode_accepts_valid_values(self, sample_python_repo, mode):
+        """All three valid override-mode values are accepted by the Go CLI.
+
+        We don't have an API key in this environment so the call still fails,
+        but the failure should NOT be a flag-validation error — it should be
+        the API-key check downstream.
+        """
+        result = run_cli(
+            "generate-context", sample_python_repo,
+            "--override-mode", mode,
+        )
+        output = (result.stderr + result.stdout).lower()
+        # Should NOT be rejected as an invalid mode value.
+        assert "invalid --override-mode" not in output
+        assert "must be use, merge, or ignore" not in output
+
+    def test_override_mode_rejects_invalid_value(self, sample_python_repo):
+        """Unknown --override-mode value is rejected before any LLM call."""
+        result = run_cli(
+            "generate-context", sample_python_repo,
+            "--override-mode", "bogus",
+        )
+        output = (result.stderr + result.stdout).lower()
+        assert result.returncode != 0
+        assert "invalid" in output
+        assert "use, merge, or ignore" in output
+
+    def test_no_tty_default_is_use(self, sample_python_repo, tmp_path):
+        """When stdin is not a TTY (subprocess) and an override file exists,
+        the CLI should silently default to 'use' rather than prompt — i.e.
+        it should NOT print the interactive prompt menu."""
+        # Copy the sample repo into tmp_path so we don't pollute the fixture
+        repo_copy = tmp_path / "repo"
+        shutil.copytree(sample_python_repo, repo_copy)
+        (repo_copy / "OPENANT.md").write_text(
+            '# manual override\n'
+            'application_type: web_app\n'
+        )
+        result = run_cli("generate-context", str(repo_copy))
+        output = result.stderr + result.stdout
+        # The interactive prompt's text should NOT appear under non-TTY stdin.
+        assert "[u]se" not in output
+        assert "[m]erge" not in output
+        assert "Choice [u/m/i]" not in output
 
 
 class TestApiKeyHandling:
