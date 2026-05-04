@@ -70,9 +70,26 @@ def cmd_scan(args):
             dynamic_test=args.dynamic_test,
             workers=args.workers,
             backoff_seconds=args.backoff,
+            repo_name=getattr(args, "repo_name", None),
+            repo_url=getattr(args, "repo_url", None),
+            commit_sha=getattr(args, "commit_sha", None),
+            diff_manifest=getattr(args, "diff_manifest", None),
         )
 
-        _output_json(success(result.to_dict()))
+        scan_payload = result.to_dict()
+        # Surface the diff block on the envelope so the Go CLI banner can
+        # render an "Incremental: base..head" line on success. The block
+        # is the same one written into pipeline_output.json by reporter.py.
+        if result.pipeline_output_path and os.path.exists(result.pipeline_output_path):
+            try:
+                with open(result.pipeline_output_path) as f:
+                    po = json.load(f)
+                diff_block = po.get("diff")
+                if isinstance(diff_block, dict) and diff_block.get("mode") == "incremental":
+                    scan_payload["diff"] = diff_block
+            except (json.JSONDecodeError, OSError):
+                pass
+        _output_json(success(scan_payload))
 
         # Exit 1 if vulnerabilities found
         if result.metrics.vulnerable > 0 or result.metrics.bypassable > 0:
@@ -106,6 +123,7 @@ def cmd_parse(args):
                 processing_level=args.level,
                 skip_tests=not args.no_skip_tests,
                 name=getattr(args, "name", None),
+                diff_manifest=getattr(args, "diff_manifest", None),
             )
 
             ctx.summary = {
@@ -113,6 +131,14 @@ def cmd_parse(args):
                 "language": result.language,
                 "processing_level": result.processing_level,
             }
+            # Surface diff stats in the parse step report if present.
+            diff_report = os.path.join(output_dir, "diff_filter.report.json")
+            if os.path.exists(diff_report):
+                try:
+                    with open(diff_report) as f:
+                        ctx.summary["diff_stats"] = json.load(f)
+                except (json.JSONDecodeError, OSError):
+                    pass
             ctx.outputs = {
                 "dataset_path": result.dataset_path,
                 "analyzer_output_path": result.analyzer_output_path,
@@ -395,6 +421,7 @@ def cmd_dynamic_test(args):
                 pipeline_output_path=args.pipeline_output,
                 output_dir=output_dir,
                 max_retries=args.max_retries,
+                repo_path=getattr(args, "repo_path", None),
             )
 
             ctx.summary = {
@@ -465,10 +492,16 @@ def cmd_report(args):
                 "Otherwise, run 'openant dynamic-test' first.\n",
                 file=sys.stderr,
             )
-            try:
-                answer = input("[Y/n] ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                answer = "n"
+            if not sys.stdin.isatty():
+                # Non-interactive (Go CLI pipes stdin) — continue silently.
+                answer = "y"
+            else:
+                sys.stderr.write("[Y/n] ")
+                sys.stderr.flush()
+                try:
+                    answer = sys.stdin.readline().strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    answer = "n"
             if answer not in ("y", "yes", ""):
                 print("Aborted. Run 'openant dynamic-test' first.", file=sys.stderr)
                 return 0
@@ -840,6 +873,7 @@ Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not 
             commit_sha = ""
             language = ""
             repo_url = ""
+            diff_block = None
             if os.path.exists(po_path):
                 try:
                     with open(po_path) as f:
@@ -849,6 +883,21 @@ Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not 
                     commit_sha = repo_info.get("commit_sha", "")
                     language = repo_info.get("language", "")
                     repo_url = repo_info.get("url", "")
+                    # Pass through the diff block when this scan ran in
+                    # incremental mode; the Go renderer surfaces base..head
+                    # in the report header.
+                    raw_diff = po.get("diff")
+                    if isinstance(raw_diff, dict) and raw_diff.get("mode") == "incremental":
+                        diff_block = {
+                            "mode": raw_diff.get("mode"),
+                            "base_sha": raw_diff.get("base_sha", ""),
+                            "head_sha": raw_diff.get("head_sha", ""),
+                            "scope": raw_diff.get("scope", ""),
+                            "units_in_diff": raw_diff.get("units_in_diff", 0) or 0,
+                            "units_total_parsed": raw_diff.get("units_total_parsed", 0) or 0,
+                            "changed_files": raw_diff.get("changed_files", 0) or 0,
+                            "pr_number": raw_diff.get("pr_number") or 0,
+                        }
                 except (json.JSONDecodeError, OSError):
                     pass
 
@@ -876,6 +925,7 @@ Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not 
                 "findings_by_verdict": findings_by_verdict,
                 "step_reports": step_reports_data,
                 "categories": categories,
+                "diff": diff_block,
             }
 
             ctx.summary = {"findings": len(findings), "actionable": len(actionable)}
@@ -938,8 +988,12 @@ def main():
     scan_p.add_argument("--model", choices=["opus", "sonnet"], default="opus", help="Model (default: opus)")
     scan_p.add_argument("--workers", type=int, default=8,
                         help="Number of parallel workers for LLM steps (default: 8)")
+    scan_p.add_argument("--repo-name", help="Repository name (org/repo)")
+    scan_p.add_argument("--repo-url", help="Repository URL")
+    scan_p.add_argument("--commit-sha", help="Commit SHA")
     scan_p.add_argument("--backoff", type=int, default=30,
                         help="Seconds to wait when rate-limited (default: 30)")
+    scan_p.add_argument("--diff-manifest", help="Path to diff_manifest.json for incremental scanning")
     scan_p.set_defaults(func=cmd_scan)
 
     # ---------------------------------------------------------------
@@ -962,6 +1016,7 @@ def main():
     )
     parse_p.add_argument("--no-skip-tests", action="store_true", help="Include test files in parsing (default: tests are skipped)")
     parse_p.add_argument("--name", help="Dataset name (default: derived from repo path)")
+    parse_p.add_argument("--diff-manifest", help="Path to diff_manifest.json; tags units with diff_selected")
     parse_p.set_defaults(func=cmd_parse)
 
     # ---------------------------------------------------------------
@@ -1045,6 +1100,7 @@ def main():
     dt_p = subparsers.add_parser("dynamic-test", help="Run dynamic exploit testing (requires Docker)")
     dt_p.add_argument("pipeline_output", help="Path to pipeline_output.json")
     dt_p.add_argument("--output", "-o", help="Output directory (default: temp dir)")
+    dt_p.add_argument("--repo-path", help="Path to the repository root (for pre-staging source files into Docker build context)")
     dt_p.add_argument("--max-retries", type=int, default=3,
                       help="Max retries per finding on error (default: 3)")
     dt_p.set_defaults(func=cmd_dynamic_test)

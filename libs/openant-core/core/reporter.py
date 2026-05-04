@@ -24,6 +24,157 @@ from core.schemas import ReportResult
 _CORE_ROOT = Path(__file__).parent.parent
 
 
+def _load_diff_metadata(scan_dir: str) -> dict | None:
+    """Return a summary dict if this scan dir contains a diff_manifest.json.
+
+    Combines fields from diff_manifest.json and diff_filter.report.json so the
+    HTML/report consumers have one place to read PR/incremental metadata.
+    """
+    manifest_path = os.path.join(scan_dir, "diff_manifest.json")
+    if not os.path.exists(manifest_path):
+        return None
+    try:
+        with open(manifest_path) as f:
+            manifest = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+    out = {
+        "mode": "incremental",
+        "base_ref": manifest.get("base_ref"),
+        "base_sha": manifest.get("base_sha"),
+        "head_sha": manifest.get("head_sha"),
+        "scope": manifest.get("scope"),
+        "pr_number": manifest.get("pr_number") or None,
+        "changed_files": len(manifest.get("changed_files") or []),
+    }
+    filter_report = os.path.join(scan_dir, "diff_filter.report.json")
+    if os.path.exists(filter_report):
+        try:
+            with open(filter_report) as f:
+                stats = json.load(f)
+            out["units_in_diff"] = stats.get("selected")
+            out["units_total_parsed"] = stats.get("total")
+            out["callers_added"] = stats.get("callers_added") or 0
+            out["fallback_file_match"] = stats.get("fallback_file_match") or 0
+        except (json.JSONDecodeError, OSError):
+            pass
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Map language hints to the code-fence language tag used in Markdown.
+_FENCE_LANG = {
+    "python": "python",
+    "py": "python",
+    "javascript": "javascript",
+    "js": "javascript",
+    "typescript": "typescript",
+    "ts": "typescript",
+    "go": "go",
+    "golang": "go",
+    "java": "java",
+    "ruby": "ruby",
+    "rb": "ruby",
+    "php": "php",
+    "rust": "rust",
+    "c": "c",
+    "cpp": "cpp",
+    "c++": "cpp",
+    "csharp": "csharp",
+    "c#": "csharp",
+}
+
+
+def _build_vulnerable_code_section(file_path: str, code: str, language: str | None) -> str:
+    """Build a pre-rendered Markdown `## Vulnerable Code` section.
+
+    The disclosure generator splices this verbatim into the LLM prompt so the
+    model cannot rewrite the snippet. Prior behaviour (asking the LLM for a
+    "minimal code snippet") produced fabricated code in DISCLOSURE_01/05.
+    """
+    if not code:
+        return ""
+    fence_lang = _FENCE_LANG.get((language or "").lower(), "")
+    return (
+        "## Vulnerable Code\n\n"
+        f"`{file_path}`:\n\n"
+        f"```{fence_lang}\n{code}\n```"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deduplication — collapse caller/callee pairs
+# ---------------------------------------------------------------------------
+
+def _dedup_caller_callee(
+    confirmed: list[dict],
+    all_results: list[dict],
+    call_graph_path: str,
+) -> list[dict]:
+    """Remove callee findings that are only reachable via a single caller
+    with the same CWE.
+
+    This prevents the same vulnerability from being reported twice when
+    a function like ``get_user()`` is the only caller of ``run_query()``
+    and both share the same vulnerability class.
+
+    Matches on CWE (integer) instead of attack_vector (LLM free text)
+    because CWE is stable across runs while attack_vector varies.
+    CWE-0 (unknown) never matches — two unknowns shouldn't collapse.
+    """
+    if not os.path.isfile(call_graph_path):
+        return confirmed
+
+    try:
+        with open(call_graph_path) as f:
+            cg_data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return confirmed
+
+    reverse_cg = cg_data.get("reverse_call_graph", {})
+
+    # Build a lookup: route_key → cwe_id for confirmed findings.
+    cwe_by_key: dict[str, int] = {}
+    for f in confirmed:
+        rk = f.get("route_key") or f.get("unit_id", "")
+        cwe = f.get("cwe_id")
+        if cwe is None:
+            full = next(
+                (r for r in all_results
+                 if (r.get("route_key") or r.get("unit_id")) == rk),
+                None,
+            )
+            cwe = full.get("cwe_id", 0) if full else 0
+        cwe_by_key[rk] = cwe
+
+    # Identify callees to remove.
+    remove_keys: set[str] = set()
+    for callee_key, callers in reverse_cg.items():
+        if len(callers) != 1:
+            continue  # multiple callers — not safe to collapse
+        caller_key = callers[0]
+        if caller_key not in cwe_by_key or callee_key not in cwe_by_key:
+            continue  # one of them wasn't confirmed — skip
+        caller_cwe = cwe_by_key[caller_key]
+        callee_cwe = cwe_by_key[callee_key]
+        if caller_cwe and caller_cwe != 0 and caller_cwe == callee_cwe:
+            remove_keys.add(callee_key)
+
+    if not remove_keys:
+        return confirmed
+
+    deduped = [
+        f for f in confirmed
+        if (f.get("route_key") or f.get("unit_id", "")) not in remove_keys
+    ]
+    removed = len(confirmed) - len(deduped)
+    print(f"[Report] Deduplicated {removed} caller/callee finding(s)", file=sys.stderr)
+    return deduped
+
+
 # ---------------------------------------------------------------------------
 # Pipeline output builder
 # ---------------------------------------------------------------------------
@@ -71,11 +222,24 @@ def build_pipeline_output(
     # Use confirmed_findings if present (verified results), else filter manually
     confirmed = experiment.get("confirmed_findings")
     if confirmed is None:
+        # Filter on the FINAL verdict, not the `agree` flag. Stage 2 may
+        # disagree on reason/CWE but still confirm vulnerable — those must
+        # not be dropped. Unverified findings are included (no verification
+        # dict = assumed confirmed).
         confirmed = [
             r for r in all_results
             if r.get("finding", r.get("verdict", "").lower()) in ("vulnerable", "bypassable")
-            and r.get("verification", {}).get("agree", True)  # unverified = assume confirmed
         ]
+
+    # ---------------------------------------------------------------
+    # Dedup: collapse caller/callee pairs that share the same attack
+    # vector. The call graph records A→B edges; if B is only reachable
+    # through A and both have the same attack_vector, keep only A.
+    # ---------------------------------------------------------------
+    call_graph_path = os.path.join(
+        os.path.dirname(os.path.abspath(results_path)), "call_graph.json"
+    )
+    confirmed = _dedup_caller_callee(confirmed, all_results, call_graph_path)
 
     # Build findings in PipelineOutput schema
     findings_data = []
@@ -100,6 +264,12 @@ def build_pipeline_output(
         )
 
         vulnerable_code = vuln.get("vulnerable_code") or code_by_route.get(route_key)
+        file_path = route_key.split(":")[0] if ":" in route_key else "unknown"
+        vulnerable_code_section = _build_vulnerable_code_section(
+            file_path=file_path,
+            code=vulnerable_code,
+            language=language,
+        )
 
         impact = vuln.get("impact") or finding.get("attack_vector")
 
@@ -132,12 +302,13 @@ def build_pipeline_output(
                 "file": route_key.split(":")[0] if ":" in route_key else "unknown",
                 "function": route_key,
             },
-            "cwe_id": vuln.get("cwe_id", 0),
-            "cwe_name": vuln.get("cwe_name", "Unknown"),
+            "cwe_id": vuln.get("cwe_id") or finding.get("cwe_id") or full_result.get("cwe_id", 0),
+            "cwe_name": vuln.get("cwe_name") or finding.get("cwe_name") or full_result.get("cwe_name", "Unknown"),
             "stage1_verdict": finding.get("verdict", finding.get("finding", "vulnerable")),
             "stage2_verdict": stage2_verdict,
             "description": description,
             "vulnerable_code": vulnerable_code,
+            "vulnerable_code_section": vulnerable_code_section,
             "impact": impact,
             "suggested_fix": vuln.get("suggested_fix"),
             "steps_to_reproduce": steps_to_reproduce,
@@ -183,6 +354,21 @@ def build_pipeline_output(
         },
         "findings": findings_data,
     }
+
+    # If this scan ran in diff mode, attach the manifest + filter stats so the
+    # HTML report can show a PR / incremental scan header.
+    scan_dir = os.path.dirname(os.path.abspath(results_path))
+    diff_meta = _load_diff_metadata(scan_dir)
+    if diff_meta is not None:
+        pipeline_output["diff"] = diff_meta
+        _banner = (
+            f"[Report] Incremental scan: base={diff_meta.get('base_ref')}, "
+            f"scope={diff_meta.get('scope')}, "
+            f"{diff_meta.get('units_in_diff', '?')}/{diff_meta.get('units_total_parsed', '?')} units"
+        )
+        if diff_meta.get("pr_number"):
+            _banner += f", PR #{diff_meta['pr_number']}"
+        print(_banner, file=sys.stderr)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     with open(output_path, "w") as f:
