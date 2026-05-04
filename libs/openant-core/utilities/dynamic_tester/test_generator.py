@@ -15,8 +15,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from utilities.llm_client import AnthropicClient, TokenTracker
+from utilities.model_config import MODEL_AUXILIARY
 
-SONNET_MODEL = "claude-sonnet-4-20250514"
+SONNET_MODEL = MODEL_AUXILIARY
 
 # Map language strings to Dockerfile template names
 LANGUAGE_MAP = {

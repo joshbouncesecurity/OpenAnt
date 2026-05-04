@@ -32,6 +32,14 @@ from typing import Any
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
+# Ensure libs/openant-core is on sys.path so `utilities.*` imports resolve
+# regardless of how this module is loaded.
+_OPENANT_CORE_ROOT = str(Path(__file__).parent.parent)
+if _OPENANT_CORE_ROOT not in sys.path:
+    sys.path.insert(0, _OPENANT_CORE_ROOT)
+
+from utilities.model_config import MODEL_AUXILIARY  # noqa: E402
+
 # Load environment variables
 load_dotenv()
 
@@ -462,7 +470,7 @@ Respond with a JSON object (no other text):
 
 def generate_application_context(
     repo_path: Path,
-    model: str = "claude-sonnet-4-20250514",
+    model: str = MODEL_AUXILIARY,
     force_regenerate: bool = False,
 ) -> ApplicationContext:
     """Generate application context using LLM analysis.

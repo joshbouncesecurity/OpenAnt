@@ -15,10 +15,11 @@ from typing import Optional
 from dataclasses import dataclass
 
 from utilities.llm_client import AnthropicClient, TokenTracker
+from utilities.model_config import MODEL_AUXILIARY
 
 
 # Use a cheaper/faster model for consistency checks
-CONSISTENCY_MODEL = "claude-sonnet-4-20250514"
+CONSISTENCY_MODEL = MODEL_AUXILIARY
 MAX_TOKENS = 4096
 
 

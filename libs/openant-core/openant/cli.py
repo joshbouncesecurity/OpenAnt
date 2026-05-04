@@ -810,9 +810,10 @@ Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not 
 {findings_text}
 """
                 print("[Report] Generating remediation guidance (LLM)...", file=sys.stderr)
+                from utilities.model_config import MODEL_AUXILIARY
                 client = anthropic.Anthropic()
                 response = client.messages.create(
-                    model="claude-sonnet-4-20250514",
+                    model=MODEL_AUXILIARY,
                     max_tokens=4096,
                     messages=[{"role": "user", "content": prompt}],
                 )
@@ -829,7 +830,7 @@ Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not 
                 usage = response.usage
                 tracker = get_global_tracker()
                 tracker.record_call(
-                    model="claude-sonnet-4-20250514",
+                    model=MODEL_AUXILIARY,
                     input_tokens=usage.input_tokens,
                     output_tokens=usage.output_tokens,
                 )

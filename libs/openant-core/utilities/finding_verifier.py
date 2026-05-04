@@ -41,6 +41,7 @@ from typing import Callable, Optional
 import anthropic
 
 from .llm_client import TokenTracker, get_global_tracker
+from .model_config import MODEL_PRIMARY
 from .rate_limiter import get_rate_limiter
 
 # Null logger that discards all messages (used when no logger provided)
@@ -62,7 +63,7 @@ except ImportError:
     ApplicationContext = None
 
 
-VERIFIER_MODEL = "claude-opus-4-6"
+VERIFIER_MODEL = MODEL_PRIMARY
 MAX_ITERATIONS = 20
 MAX_TOKENS_PER_RESPONSE = 4096
 

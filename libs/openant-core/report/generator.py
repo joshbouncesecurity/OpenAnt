@@ -12,18 +12,25 @@ import anthropic
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Ensure libs/openant-core is on sys.path so `utilities.*` imports resolve.
+_OPENANT_CORE_ROOT = str(Path(__file__).parent.parent)
+if _OPENANT_CORE_ROOT not in sys.path:
+    sys.path.insert(0, _OPENANT_CORE_ROOT)
+
+from utilities.model_config import MODEL_PRIMARY, MODEL_AUXILIARY  # noqa: E402
+
 from .schema import validate_pipeline_output, ValidationError
 
 load_dotenv()
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
-MODEL = "claude-opus-4-6"
+MODEL = MODEL_PRIMARY
 
-# Pricing per million tokens
+# Pricing per million tokens. Aliased opus keys retained for backward
+# compatibility with any cached/legacy responses that recorded the literal.
 _PRICING = {
-    "claude-opus-4-6": {"input": 15.00, "output": 75.00},
-    "claude-opus-4-20250514": {"input": 15.00, "output": 75.00},
-    "claude-sonnet-4-20250514": {"input": 3.00, "output": 15.00},
+    MODEL_PRIMARY: {"input": 15.00, "output": 75.00},
+    MODEL_AUXILIARY: {"input": 3.00, "output": 15.00},
 }
 _DEFAULT_PRICING = {"input": 3.00, "output": 15.00}
 

@@ -27,6 +27,7 @@ import anthropic
 
 from .llm_client import AnthropicClient, TokenTracker, get_global_tracker, reset_global_tracker
 from .agentic_enhancer import RepositoryIndex, enhance_unit_with_agent, load_index_from_file
+from .model_config import MODEL_AUXILIARY
 from .rate_limiter import get_rate_limiter, is_rate_limit_error, is_retryable_error
 
 # Avoid circular import — import checkpoint at usage site
@@ -45,7 +46,7 @@ _null_logger.addHandler(logging.NullHandler())
 
 
 # Use Sonnet for context enhancement (cost-effective auxiliary task)
-CONTEXT_ENHANCEMENT_MODEL = "claude-sonnet-4-20250514"
+CONTEXT_ENHANCEMENT_MODEL = MODEL_AUXILIARY
 
 
 def _build_error_info(exc: Exception) -> dict:
@@ -568,7 +569,7 @@ class ContextEnhancer:
         remaining = total - len(processed_ids)
         self._log("info", f"Enhancing {remaining} units with agentic analysis ({len(processed_ids)} already done)", units=remaining)
         self._log("info", "Mode: Iterative tool use (traces call paths)")
-        self._log("info", "Model: claude-sonnet-4-20250514")
+        self._log("info", f"Model: {CONTEXT_ENHANCEMENT_MODEL}")
         mode = "sequential" if workers <= 1 else f"parallel ({workers} workers)"
         self._log("info", f"Workers: {mode}")
         if checkpoint_dir:

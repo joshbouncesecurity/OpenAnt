@@ -17,6 +17,7 @@ from typing import Optional, Set, List
 import anthropic
 
 from ..llm_client import TokenTracker, get_global_tracker
+from ..model_config import MODEL_AUXILIARY
 from ..rate_limiter import get_rate_limiter
 from .repository_index import RepositoryIndex
 from .tools import TOOL_DEFINITIONS, ToolExecutor
@@ -26,7 +27,7 @@ from .reachability_analyzer import ReachabilityAnalyzer
 
 
 # Use Sonnet for exploration (cost-effective)
-AGENT_MODEL = "claude-sonnet-4-20250514"
+AGENT_MODEL = MODEL_AUXILIARY
 
 # Safety limits
 MAX_ITERATIONS = 20

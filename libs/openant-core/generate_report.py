@@ -27,16 +27,26 @@ import argparse
 import json
 import html
 import os
+import sys
 from datetime import datetime
+from pathlib import Path
 
 import anthropic
 from dotenv import load_dotenv
+
+# Ensure libs/openant-core is on sys.path so `utilities.*` imports resolve
+# regardless of the caller's working directory.
+_OPENANT_CORE_ROOT = str(Path(__file__).parent)
+if _OPENANT_CORE_ROOT not in sys.path:
+    sys.path.insert(0, _OPENANT_CORE_ROOT)
+
+from utilities.model_config import MODEL_AUXILIARY  # noqa: E402
 
 # Load environment variables from .env file
 load_dotenv()
 
 
-REPORT_MODEL = "claude-sonnet-4-20250514"
+REPORT_MODEL = MODEL_AUXILIARY
 MAX_TOKENS = 4096
 
 
