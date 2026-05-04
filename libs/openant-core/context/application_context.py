@@ -153,6 +153,12 @@ MANUAL_OVERRIDE_FILES = [
     ".openant.json",
 ]
 
+# Maximum size (chars) of an override file when included in merge-mode LLM
+# input. Larger files are truncated with a marker so they don't blow the
+# prompt budget. 10 KB is comfortably above a hand-written notes file but
+# well below the 200K-token context window.
+MAX_OVERRIDE_MERGE_CHARS = 10000
+
 # Priority files to read for context generation
 CONTEXT_FILES = [
     "README.md",
@@ -195,6 +201,9 @@ ENTRY_POINT_PATTERNS = {
 def find_override_file(repo_path: Path) -> Path | None:
     """Return path to first existing manual override file, or None.
 
+    Only regular files are considered — directories that happen to share
+    an override filename are skipped (matches the Go CLI's behavior).
+
     Args:
         repo_path: Path to repository root.
 
@@ -203,7 +212,7 @@ def find_override_file(repo_path: Path) -> Path | None:
     """
     for filename in MANUAL_OVERRIDE_FILES:
         filepath = repo_path / filename
-        if filepath.exists():
+        if filepath.is_file():
             return filepath
     return None
 
@@ -224,8 +233,10 @@ def gather_context_sources(repo_path: Path, override_path: Path | None = None) -
     if override_path is not None:
         try:
             content = override_path.read_text(errors="ignore")
-            if len(content) > 10000:
-                content = content[:10000] + "\n\n[... truncated ...]"
+            if len(content) > MAX_OVERRIDE_MERGE_CHARS:
+                content = (
+                    content[:MAX_OVERRIDE_MERGE_CHARS] + "\n\n[... truncated ...]"
+                )
             sources[override_path.name] = content
         except Exception as e:
             print(f"Warning: Could not read {override_path.name}: {e}", file=sys.stderr)

@@ -61,15 +61,22 @@ class TestFindOverrideFile:
         assert MANUAL_OVERRIDE_FILES.index("OPENANT.md") < MANUAL_OVERRIDE_FILES.index("OPENANT.json")
 
     def test_directory_with_override_name_is_skipped(self, tmp_path):
-        """A directory named OPENANT.md should be detected by Path.exists() — confirm
-        the helper at least returns a Path object (not crashes)."""
-        # find_override_file uses .exists(), which is True for directories too,
-        # so this test simply documents current behavior: it returns the path.
+        """A directory named OPENANT.md must NOT be returned — only regular
+        files are valid overrides, matching the Go CLI's behavior. Otherwise
+        merge mode would crash trying to read_text() on a directory."""
         d = tmp_path / "OPENANT.md"
         d.mkdir()
+        # A real override file lower in priority should be picked up instead.
+        json_override = tmp_path / "OPENANT.json"
+        json_override.write_text('{"application_type": "web_app"}')
+
         result = find_override_file(tmp_path)
-        # The behavior is "first existing path wins" — this just documents it.
-        assert result == d
+        assert result == json_override
+
+    def test_directory_only_returns_none(self, tmp_path):
+        """If the only matching path is a directory, return None — not crash."""
+        (tmp_path / "OPENANT.md").mkdir()
+        assert find_override_file(tmp_path) is None
 
     def test_accepts_str_path(self, tmp_path):
         """Helper accepts a Path; calling with str via Path() conversion works."""

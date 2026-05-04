@@ -6,11 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/knostic/open-ant-cli/internal/output"
 	"github.com/knostic/open-ant-cli/internal/python"
 	"github.com/spf13/cobra"
 )
+
+// promptTimeout is how long the interactive override-mode prompt waits for
+// user input before falling back to the default ("use"). This protects
+// against indefinite hangs if a TTY is detected but no user is actually
+// available to respond (e.g. some CI runners, detached terminals).
+const promptTimeout = 30 * time.Second
 
 var generateContextCmd = &cobra.Command{
 	Use:   "generate-context [repository-path]",
@@ -171,17 +178,38 @@ func isInteractiveTerminal() bool {
 }
 
 // promptOverrideMode shows an interactive prompt for how to handle the override file.
+// The prompt times out after promptTimeout and falls back to the default ("use")
+// if no input is received, so the CLI can never hang indefinitely waiting on a
+// detached or unattended terminal.
 func promptOverrideMode(filename string) string {
 	fmt.Fprintf(os.Stderr, "\nFound manual override: %s\n\n", filename)
 	fmt.Fprintln(os.Stderr, "  [u]se    — Use as-is (skip LLM generation)")
 	fmt.Fprintln(os.Stderr, "  [m]erge  — Feed into LLM alongside other sources")
 	fmt.Fprintln(os.Stderr, "  [i]gnore — Ignore, generate from scratch")
 	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprint(os.Stderr, "Choice [u/m/i] (default: u): ")
+	fmt.Fprintf(os.Stderr, "Choice [u/m/i] (default: u, %ds timeout): ",
+		int(promptTimeout.Seconds()))
 
-	reader := bufio.NewReader(os.Stdin)
-	answer, _ := reader.ReadString('\n')
-	answer = strings.TrimSpace(strings.ToLower(answer))
+	// Read on a goroutine so we can race against a timeout.
+	type readResult struct {
+		line string
+		err  error
+	}
+	ch := make(chan readResult, 1)
+	go func() {
+		reader := bufio.NewReader(os.Stdin)
+		line, err := reader.ReadString('\n')
+		ch <- readResult{line: line, err: err}
+	}()
+
+	var answer string
+	select {
+	case res := <-ch:
+		answer = strings.TrimSpace(strings.ToLower(res.line))
+	case <-time.After(promptTimeout):
+		fmt.Fprintln(os.Stderr, "\nNo response — defaulting to 'use'.")
+		return "use"
+	}
 
 	switch answer {
 	case "m", "merge":
