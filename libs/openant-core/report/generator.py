@@ -57,10 +57,20 @@ def _merge_usage(usages: list[dict]) -> dict:
 
 
 def _check_api_key():
-    """Check that ANTHROPIC_API_KEY is set."""
+    """Check that we have a viable auth path for the Claude Agent SDK.
+
+    Two modes are supported (matches utilities.llm_client._build_env):
+    - OPENANT_LOCAL_CLAUDE=true: SDK uses the local Claude Code session
+      (no API key needed).
+    - Otherwise: ANTHROPIC_API_KEY must be set.
+    """
+    local_mode = os.environ.get("OPENANT_LOCAL_CLAUDE", "").lower() == "true"
+    if local_mode:
+        return
     if not os.environ.get("ANTHROPIC_API_KEY"):
         print("Error: ANTHROPIC_API_KEY environment variable not set.", file=sys.stderr)
         print("Set it with: export ANTHROPIC_API_KEY=sk-ant-...", file=sys.stderr)
+        print("Or use OPENANT_LOCAL_CLAUDE=true to use the local Claude Code session.", file=sys.stderr)
         sys.exit(1)
 
 

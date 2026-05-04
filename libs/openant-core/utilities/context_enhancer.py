@@ -58,7 +58,8 @@ CONTEXT_ENHANCEMENT_MODEL = MODEL_AUXILIARY
 def _build_error_info(exc: Exception) -> dict:
     """Build a structured error dict from an exception.
 
-    Maps utilities.sdk_errors classes onto the diagnostic shape
+    Maps utilities.sdk_errors classes (raised by llm_client._run_query)
+    AND claude_agent_sdk process-level errors onto the diagnostic shape
     is_rate_limit_error() and is_retryable_error() expect:
 
         {"type": "rate_limit" | "connection" | "timeout" |
@@ -80,7 +81,7 @@ def _build_error_info(exc: Exception) -> dict:
         "message": str(exc),
     }
 
-    # SDK-layer errors raised by utilities.llm_client._run_query.
+    # SDK-layer (API-reported) errors raised by utilities.llm_client._run_query.
     if isinstance(exc, RateLimitError):
         info["type"] = "rate_limit"
     elif isinstance(exc, AuthError):
@@ -97,6 +98,33 @@ def _build_error_info(exc: Exception) -> dict:
         info["status_code"] = 400
     elif isinstance(exc, UnknownLLMError):
         info["type"] = "unknown"
+    else:
+        # Process-level errors from claude_agent_sdk: classify so the
+        # retry policy treats transient subprocess/IO failures as retryable.
+        try:
+            from claude_agent_sdk import (
+                CLIConnectionError,
+                CLIJSONDecodeError,
+                CLINotFoundError,
+                ProcessError,
+            )
+            if isinstance(exc, CLIConnectionError):
+                info["type"] = "connection"
+            elif isinstance(exc, ProcessError):
+                # Subprocess died unexpectedly — usually transient.
+                info["type"] = "connection"
+            elif isinstance(exc, CLIJSONDecodeError):
+                # Malformed SDK response — treat as transient.
+                info["type"] = "connection"
+            elif isinstance(exc, CLINotFoundError):
+                # `claude` binary missing — not retryable; surface as auth-class
+                # (caller-fixable config issue).
+                info["type"] = "auth"
+        except ImportError:  # pragma: no cover
+            pass
+        # Plain TimeoutError still matches the "timeout" retry path.
+        if isinstance(exc, TimeoutError):
+            info["type"] = "timeout"
 
     # Agent iteration state (attached by agent.py)
     agent_state = getattr(exc, "agent_state", None)

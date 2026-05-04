@@ -427,20 +427,36 @@ def reset_global_tracker():
     _global_tracker.reset()
 
 
+_auth_mode_logged = False
+_auth_mode_lock = threading.Lock()
+
+
 def _log_auth_mode():
-    """Print which auth mode the SDK will use (once per client creation)."""
-    local_mode = os.getenv("OPENANT_LOCAL_CLAUDE", "").lower() == "true"
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    config_dir = os.getenv("CLAUDE_CONFIG_DIR")
-    if local_mode:
-        if config_dir:
-            print(f"Using Claude Agent SDK (local session, config: {config_dir})", file=sys.stderr)
+    """Print which auth mode the SDK will use (once per process).
+
+    Without a guard, every AnthropicClient construction re-prints — under
+    parallel workers (10+ threads) this floods stderr. The lock+flag pair
+    makes this exactly-once even when many threads race AnthropicClient().
+    """
+    global _auth_mode_logged
+    if _auth_mode_logged:
+        return
+    with _auth_mode_lock:
+        if _auth_mode_logged:
+            return
+        local_mode = os.getenv("OPENANT_LOCAL_CLAUDE", "").lower() == "true"
+        api_key = os.getenv("ANTHROPIC_API_KEY")
+        config_dir = os.getenv("CLAUDE_CONFIG_DIR")
+        if local_mode:
+            if config_dir:
+                print(f"Using Claude Agent SDK (local session, config: {config_dir})", file=sys.stderr)
+            else:
+                print("Using Claude Agent SDK (local session)", file=sys.stderr)
+        elif api_key:
+            print("Using Claude Agent SDK (API key mode)", file=sys.stderr)
         else:
             print("Using Claude Agent SDK (local session)", file=sys.stderr)
-    elif api_key:
-        print("Using Claude Agent SDK (API key mode)", file=sys.stderr)
-    else:
-        print("Using Claude Agent SDK (local session)", file=sys.stderr)
+        _auth_mode_logged = True
 
 
 class AnthropicClient:
@@ -477,6 +493,12 @@ class AnthropicClient:
 
         Rate-limit handling: ``_run_query`` raises ``sdk_errors.RateLimitError``
         and notifies the GlobalRateLimiter; we don't need to catch it here.
+
+        Note on ``max_tokens``: ``ClaudeAgentOptions`` (Claude Agent SDK 0.1.x)
+        does not expose a top-level max-output-tokens setting — the SDK lets
+        the model decide. The parameter is accepted for backwards compatibility
+        with the pre-migration anthropic-SDK signature but is currently a no-op.
+        See PR #51 for context.
         """
         # Wait if we're in a global backoff period
         get_rate_limiter().wait_if_needed()

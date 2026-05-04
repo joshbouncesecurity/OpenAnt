@@ -283,6 +283,13 @@ class FindingVerifier:
         # SDK reports a rate-limit mid-flight.
         get_rate_limiter().wait_if_needed()
 
+        # Lazy import to keep the module loadable when claude_agent_sdk is
+        # not installed (e.g. parse-only commands).
+        try:
+            from claude_agent_sdk import ClaudeSDKError
+        except ImportError:  # pragma: no cover
+            ClaudeSDKError = ()  # type: ignore[assignment]
+
         try:
             result = run_native_verification(
                 prompt=user_prompt,
@@ -293,12 +300,16 @@ class FindingVerifier:
                 max_budget_usd=MAX_BUDGET_USD_PER_FINDING,
                 timeout=MAX_VERIFICATION_TIMEOUT_S,
             )
-        except (RuntimeError, FileNotFoundError, TimeoutError) as exc:
-            # Process-level failures (SDK subprocess died, CLI missing, etc.)
-            # fall through to a conservative "agree" verdict so the pipeline
-            # does not abort on a single bad finding. Rate-limit errors are
-            # re-raised unmodified so the caller's backoff/retry logic can
-            # see them.
+        except (RuntimeError, FileNotFoundError, TimeoutError, ClaudeSDKError) as exc:
+            # Process-level failures (SDK subprocess died, CLI missing,
+            # connection error, JSON decode failure, etc.) fall through to a
+            # conservative "agree" verdict so the pipeline does not abort on
+            # a single bad finding. ClaudeSDKError is the SDK's umbrella base
+            # class — catches CLINotFoundError, CLIConnectionError,
+            # ProcessError, CLIJSONDecodeError. Rate-limit errors come
+            # through as utilities.sdk_errors.RateLimitError (not a subclass
+            # of ClaudeSDKError) and propagate unmodified so caller
+            # backoff/retry logic can see them.
             print(f"[Verify] Native SDK verification failed: {exc}",
                   file=sys.stderr, flush=True)
             return VerificationResult(

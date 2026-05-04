@@ -15,11 +15,22 @@ from claude_agent_sdk import AssistantMessage, ResultMessage, TextBlock
 
 @pytest.fixture(autouse=True)
 def reset_rate_limiter():
-    """Each test gets a clean rate-limiter singleton."""
+    """Each test gets a clean rate-limiter singleton.
+
+    The module-level singleton is held in `_rate_limiter` (not `_instance`,
+    which lives on the GlobalRateLimiter class). We use the public
+    `reset_rate_limiter()` API plus null out the module-level handle so the
+    next get_rate_limiter() call constructs a fresh instance — important for
+    tests that mock report_rate_limit on the singleton.
+    """
     from utilities import rate_limiter
-    rate_limiter._instance = None
+    rate_limiter.reset_rate_limiter()
+    rate_limiter._rate_limiter = None
+    rate_limiter.GlobalRateLimiter._instance = None
     yield
-    rate_limiter._instance = None
+    rate_limiter.reset_rate_limiter()
+    rate_limiter._rate_limiter = None
+    rate_limiter.GlobalRateLimiter._instance = None
 
 
 def _assistant_msg(error=None, text=None):
