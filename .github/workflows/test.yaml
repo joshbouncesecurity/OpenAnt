@@ -37,6 +37,10 @@ jobs:
         working-directory: libs/openant-core
         run: pip install -r requirements.txt && pip install ".[dev]"
 
+      - name: Lint Python (undefined names, syntax errors)
+        working-directory: libs/openant-core
+        run: ruff check .
+
       - name: Cache JS parser node_modules
         id: cache-node-modules
         uses: actions/cache@v4
