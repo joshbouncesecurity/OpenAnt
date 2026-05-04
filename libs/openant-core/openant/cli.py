@@ -75,6 +75,7 @@ def cmd_scan(args):
             repo_url=getattr(args, "repo_url", None),
             commit_sha=getattr(args, "commit_sha", None),
             diff_manifest=getattr(args, "diff_manifest", None),
+            llm_reachability=getattr(args, "llm_reachability", False),
         )
 
         scan_payload = result.to_dict()
@@ -988,6 +989,14 @@ def main():
     scan_p.add_argument("--backoff", type=int, default=30,
                         help="Seconds to wait when rate-limited (default: 30)")
     scan_p.add_argument("--diff-manifest", help="Path to diff_manifest.json for incremental scanning")
+    scan_p.add_argument(
+        "--llm-reachability",
+        action="store_true",
+        dest="llm_reachability",
+        help="Enable the LLM reachability review stage (Opus). "
+             "Surfaces additional entry points and external-input sites "
+             "beyond the structural pass. Off by default (cost-controlled).",
+    )
     scan_p.set_defaults(func=cmd_scan)
 
     # ---------------------------------------------------------------

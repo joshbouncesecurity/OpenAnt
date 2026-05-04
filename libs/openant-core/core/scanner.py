@@ -60,6 +60,7 @@ def scan_repository(
     repo_url: str | None = None,
     commit_sha: str | None = None,
     diff_manifest: str | None = None,
+    llm_reachability: bool = False,
 ) -> ScanResult:
     """Scan a repository for vulnerabilities.
 
@@ -107,6 +108,7 @@ def scan_repository(
     # Count total steps for progress display
     total_steps = _count_steps(
         generate_context, enhance, verify, generate_report, dynamic_test,
+        llm_reachability=llm_reachability,
     )
     step_num = 0
 
@@ -170,6 +172,84 @@ def scan_repository(
 
     # Active dataset path — may be updated by enhance step
     active_dataset_path = parse_result.dataset_path
+
+    # ---------------------------------------------------------------
+    # Step 1.5: LLM Reachability review (optional, opt-in)
+    # ---------------------------------------------------------------
+    # Runs after structural reachability (parse) and before enhance/analyze.
+    # Signals are advisory and PROMOTE-ONLY: they may flag additional entry
+    # points or external-input sites the structural pass missed, but never
+    # demote a unit that structural analysis already kept.
+    if llm_reachability:
+        from core.llm_reachability import (
+            analyze_reachability,
+            apply_signals,
+            signals_to_json,
+        )
+
+        print(_step_label("Running LLM reachability review..."), file=sys.stderr)
+
+        with step_context("llm-reachability", output_dir, inputs={
+            "dataset_path": active_dataset_path,
+            "model": "opus",
+        }) as ctx:
+            try:
+                with open(active_dataset_path, encoding="utf-8") as f:
+                    dataset = json.load(f)
+            except (OSError, json.JSONDecodeError) as exc:
+                print(f"  WARNING: failed to load dataset: {exc}", file=sys.stderr)
+                ctx.summary = {"skipped": True, "reason": str(exc)}
+                dataset = None
+
+            if dataset is not None:
+                app_ctx_payload = None
+                if app_context_path and os.path.exists(app_context_path):
+                    try:
+                        with open(app_context_path, encoding="utf-8") as f:
+                            app_ctx_payload = json.load(f)
+                    except (OSError, json.JSONDecodeError):
+                        app_ctx_payload = None
+
+                signals = analyze_reachability(
+                    dataset=dataset,
+                    app_context=app_ctx_payload,
+                    max_units=limit,
+                )
+                summary = apply_signals(dataset, signals)
+
+                # Persist mutated dataset (so downstream stages see the
+                # promoted entry points and the per-unit signals).
+                with open(active_dataset_path, "w", encoding="utf-8") as f:
+                    json.dump(dataset, f, indent=2)
+
+                signals_path = os.path.join(output_dir, "llm_reachability.json")
+                with open(signals_path, "w", encoding="utf-8") as f:
+                    json.dump(
+                        {"signals": signals_to_json(signals)},
+                        f,
+                        indent=2,
+                    )
+
+                ctx.summary = {
+                    "units_reviewed": len(dataset.get("units", [])),
+                    "signals_added": summary["signals_applied"],
+                    "entry_points_promoted": summary["entry_points_promoted"],
+                    "units_touched": summary["units_touched"],
+                }
+                ctx.outputs = {"signals_path": signals_path}
+
+                print(
+                    f"  LLM reachability: {summary['signals_applied']} signals, "
+                    f"{summary['entry_points_promoted']} new entry points",
+                    file=sys.stderr,
+                )
+
+        collected_step_reports.append(
+            _load_step_report(output_dir, "llm-reachability")
+        )
+    else:
+        result.skipped_steps.append("llm-reachability")
+    print(file=sys.stderr)
 
     # ---------------------------------------------------------------
     # Step 2: Application Context (optional)
@@ -522,6 +602,7 @@ def _count_steps(
     verify: bool,
     generate_report: bool,
     dynamic_test: bool,
+    llm_reachability: bool = False,
 ) -> int:
     """Count total steps for progress display (always includes parse, detect, build-output)."""
     count = 3  # parse + detect + build-output (always run)
@@ -534,6 +615,8 @@ def _count_steps(
     if generate_report:
         count += 1
     if dynamic_test:
+        count += 1
+    if llm_reachability:
         count += 1
     return count
 
