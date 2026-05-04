@@ -3,7 +3,13 @@ package cmd
 import (
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
+
+// ---------------------------------------------------------------------------
+// --level flag
+// ---------------------------------------------------------------------------
 
 func TestParseLevelFlagDefaultIsReachable(t *testing.T) {
 	flag := parseCmd.Flag("level")
@@ -72,8 +78,79 @@ func TestBuildParsePyArgsBaseline(t *testing.T) {
 	}
 }
 
-// findFlag returns whether name is present in argv, and its following value
-// (or "" if it has no value).
+// ---------------------------------------------------------------------------
+// --fresh flag registration
+// ---------------------------------------------------------------------------
+
+func TestParseCmdHasFreshFlag(t *testing.T) {
+	flag := parseCmd.Flags().Lookup("fresh")
+	if flag == nil {
+		t.Fatal("parseCmd is missing the --fresh flag")
+	}
+	if flag.Value.Type() != "bool" {
+		t.Errorf("--fresh should be a bool flag, got type %q", flag.Value.Type())
+	}
+	if flag.DefValue != "false" {
+		t.Errorf("--fresh default should be false, got %q", flag.DefValue)
+	}
+	if flag.Usage == "" {
+		t.Error("--fresh flag is missing a usage/help string")
+	}
+}
+
+func TestParseCmdFreshFlagInitialState(t *testing.T) {
+	orig := parseFresh
+	defer func() { parseFresh = orig }()
+
+	parseFresh = false
+	if parseFresh {
+		t.Errorf("parseFresh should default to false, got true")
+	}
+}
+
+func TestParseCmdFreshFlagParses(t *testing.T) {
+	orig := parseFresh
+	defer func() {
+		parseFresh = orig
+		_ = parseCmd.Flags().Set("fresh", "false")
+	}()
+
+	parseFresh = false
+	if err := parseCmd.Flags().Set("fresh", "true"); err != nil {
+		t.Fatalf("failed to set --fresh: %v", err)
+	}
+	if !parseFresh {
+		t.Error("setting --fresh=true should make parseFresh true")
+	}
+
+	if err := parseCmd.Flags().Set("fresh", "false"); err != nil {
+		t.Fatalf("failed to set --fresh=false: %v", err)
+	}
+	if parseFresh {
+		t.Error("setting --fresh=false should make parseFresh false")
+	}
+}
+
+func TestParseCmdIsRegisteredOnRoot(t *testing.T) {
+	var found *cobra.Command
+	for _, c := range rootCmd.Commands() {
+		if c.Name() == "parse" {
+			found = c
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("parse command not registered on rootCmd")
+	}
+	if found.Flags().Lookup("fresh") == nil {
+		t.Error("parse subcommand resolved from root is missing --fresh flag")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
 func findFlag(argv []string, name string) (bool, string) {
 	for i, a := range argv {
 		if a == name {
