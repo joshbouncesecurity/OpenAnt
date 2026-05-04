@@ -173,18 +173,49 @@ def scan_repository(
     # Active dataset path — may be updated by enhance step
     active_dataset_path = parse_result.dataset_path
 
-    # Forward-declared so step 1.5 (LLM reachability) can reference it before
-    # step 2 (app-context) populates it. The LLM reachability block uses
-    # app_context only if a file already exists on disk from a prior run.
+    # ---------------------------------------------------------------
+    # Step 2: Application Context (optional)
+    # ---------------------------------------------------------------
     app_context_path: str | None = None
+    if generate_context and HAS_APP_CONTEXT:
+        print(_step_label("Generating application context..."), file=sys.stderr)
+
+        with step_context("app-context", output_dir, inputs={
+            "repo_path": repo_path,
+        }) as ctx:
+            try:
+                context = generate_application_context(Path(repo_path))
+                app_context_path = os.path.join(output_dir, "application_context.json")
+                save_context(context, Path(app_context_path))
+                result.app_context_path = app_context_path
+                ctx.summary = {"application_type": context.application_type}
+                ctx.outputs = {"app_context_path": app_context_path}
+                print(f"  App type: {context.application_type}", file=sys.stderr)
+            except Exception as e:
+                print(f"  WARNING: App context generation failed: {e}", file=sys.stderr)
+                print("  Continuing without app context.", file=sys.stderr)
+                ctx.summary = {"skipped": True, "reason": str(e)}
+
+        collected_step_reports.append(_load_step_report(output_dir, "app-context"))
+    elif generate_context:
+        print(_step_label("Skipping application context (module not available)."),
+              file=sys.stderr)
+        result.skipped_steps.append("app-context")
+    else:
+        print(_step_label("Skipping application context (--no-context)."),
+              file=sys.stderr)
+        result.skipped_steps.append("app-context")
+    print(file=sys.stderr)
 
     # ---------------------------------------------------------------
-    # Step 1.5: LLM Reachability review (optional, opt-in)
+    # Step 2.5: LLM Reachability review (optional, opt-in)
     # ---------------------------------------------------------------
-    # Runs after structural reachability (parse) and before enhance/analyze.
-    # Signals are advisory and PROMOTE-ONLY: they may flag additional entry
-    # points or external-input sites the structural pass missed, but never
-    # demote a unit that structural analysis already kept.
+    # Runs after parse + app-context and before enhance/analyze. Signals are
+    # advisory and PROMOTE-ONLY: they may flag additional entry points or
+    # external-input sites the structural pass missed, but never demote a
+    # unit that structural analysis already kept. Threading app_context into
+    # the LLM prompt helps the model reason about expected entry points
+    # (e.g. "this is a web_app, look for HTTP handlers").
     if llm_reachability:
         from core.llm_reachability import (
             analyze_reachability,
@@ -254,39 +285,6 @@ def scan_repository(
         )
     else:
         result.skipped_steps.append("llm-reachability")
-    print(file=sys.stderr)
-
-    # ---------------------------------------------------------------
-    # Step 2: Application Context (optional)
-    # ---------------------------------------------------------------
-    if generate_context and HAS_APP_CONTEXT:
-        print(_step_label("Generating application context..."), file=sys.stderr)
-
-        with step_context("app-context", output_dir, inputs={
-            "repo_path": repo_path,
-        }) as ctx:
-            try:
-                context = generate_application_context(Path(repo_path))
-                app_context_path = os.path.join(output_dir, "application_context.json")
-                save_context(context, Path(app_context_path))
-                result.app_context_path = app_context_path
-                ctx.summary = {"application_type": context.application_type}
-                ctx.outputs = {"app_context_path": app_context_path}
-                print(f"  App type: {context.application_type}", file=sys.stderr)
-            except Exception as e:
-                print(f"  WARNING: App context generation failed: {e}", file=sys.stderr)
-                print("  Continuing without app context.", file=sys.stderr)
-                ctx.summary = {"skipped": True, "reason": str(e)}
-
-        collected_step_reports.append(_load_step_report(output_dir, "app-context"))
-    elif generate_context:
-        print(_step_label("Skipping application context (module not available)."),
-              file=sys.stderr)
-        result.skipped_steps.append("app-context")
-    else:
-        print(_step_label("Skipping application context (--no-context)."),
-              file=sys.stderr)
-        result.skipped_steps.append("app-context")
     print(file=sys.stderr)
 
     # ---------------------------------------------------------------
