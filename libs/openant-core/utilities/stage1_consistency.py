@@ -268,21 +268,14 @@ def _resolve_stage1_inconsistency(
     prompt = get_stage1_consistency_prompt(group, code_by_route)
 
     try:
-        response = client.messages.create(
+        # AnthropicClient now wraps the Claude Agent SDK; analyze_sync handles
+        # token + cost tracking against the shared TokenTracker.
+        text = client.analyze_sync(
+            prompt,
             model=CONSISTENCY_MODEL,
             max_tokens=MAX_TOKENS,
             system="You are checking verdict consistency across similar code patterns in a security analysis.",
-            messages=[{"role": "user", "content": prompt}]
         )
-
-        tracker.record_call(
-            model=CONSISTENCY_MODEL,
-            input_tokens=response.usage.input_tokens,
-            output_tokens=response.usage.output_tokens
-        )
-
-        # Parse response
-        text = response.content[0].text if response.content else ""
 
         # Extract JSON from response
         json_match = re.search(r'\{[\s\S]*\}', text)

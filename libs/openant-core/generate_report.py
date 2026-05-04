@@ -31,7 +31,6 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-import anthropic
 from dotenv import load_dotenv
 
 # Ensure libs/openant-core is on sys.path so `utilities.*` imports resolve
@@ -41,6 +40,7 @@ if _OPENANT_CORE_ROOT not in sys.path:
     sys.path.insert(0, _OPENANT_CORE_ROOT)
 
 from utilities.model_config import MODEL_AUXILIARY  # noqa: E402
+from utilities.llm_client import AnthropicClient  # noqa: E402
 
 # Load environment variables from .env file
 load_dotenv()
@@ -208,18 +208,10 @@ Format your response as HTML (use <h3>, <p>, <ul>, <li>, <strong> tags). Do not 
 {findings_text}
 """
 
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        raise ValueError("ANTHROPIC_API_KEY not found in environment")
-
-    client = anthropic.Anthropic(api_key=api_key)
-    response = client.messages.create(
-        model=REPORT_MODEL,
-        max_tokens=MAX_TOKENS,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    return response.content[0].text
+    # AnthropicClient is the SDK-backed wrapper; it handles auth (API key
+    # or local Claude Code session) and surfaces structured SDK errors.
+    client = AnthropicClient(model=REPORT_MODEL)
+    return client.analyze_sync(prompt, max_tokens=MAX_TOKENS)
 
 
 def _build_pipeline_costs_html(step_reports: list[dict]) -> str:

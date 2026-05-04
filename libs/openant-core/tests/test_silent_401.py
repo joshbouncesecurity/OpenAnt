@@ -7,24 +7,13 @@ which could be mistaken for a clean repo.
 
 import io
 import sys
-import types
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 _CORE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(_CORE_ROOT))
-
-if "anthropic" not in sys.modules:
-    _stub = types.ModuleType("anthropic")
-    _stub.Anthropic = MagicMock()
-    sys.modules["anthropic"] = _stub
-_anth = sys.modules["anthropic"]
-if not hasattr(_anth, "RateLimitError"):
-    _anth.RateLimitError = type("RateLimitError", (Exception,), {})
-if not hasattr(_anth, "AuthenticationError"):
-    _anth.AuthenticationError = type("AuthenticationError", (Exception,), {})
 
 from core.schemas import ScanResult, AnalysisMetrics, UsageInfo  # noqa: E402
 
@@ -98,20 +87,27 @@ def test_print_summary_no_warning_on_normal_scan(normal_result):
 # ---------------------------------------------------------------------------
 
 def test_analyze_sync_raises_on_auth_error():
-    """When the Anthropic API returns 401, analyze_sync must not swallow it."""
+    """When the Claude Agent SDK reports auth failure, analyze_sync must not swallow it.
+
+    The SDK signals authentication failures via ``AssistantMessage.error ==
+    "authentication_failed"``, which ``llm_client._run_query`` re-raises as
+    ``utilities.sdk_errors.AuthError``. ``AnthropicClient.analyze_sync`` must
+    propagate that exception unmodified rather than returning an empty string.
+    """
     import os
     os.environ["ANTHROPIC_API_KEY"] = "sk-test-bad-key"
 
     from utilities.llm_client import AnthropicClient
-
-    AuthError = sys.modules["anthropic"].AuthenticationError
+    from utilities.sdk_errors import AuthError
 
     client = AnthropicClient.__new__(AnthropicClient)
-    client.client = MagicMock()
-    client.client.messages.create.side_effect = AuthError("invalid x-api-key")
     client.model = "claude-haiku-4-5-20251001"
     client.tracker = MagicMock()
     client.last_call = None
 
-    with pytest.raises(AuthError):
-        client.analyze_sync("test prompt")
+    with patch(
+        "utilities.llm_client._run_query_sync",
+        side_effect=AuthError("invalid x-api-key"),
+    ):
+        with pytest.raises(AuthError):
+            client.analyze_sync("test prompt")

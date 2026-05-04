@@ -22,8 +22,12 @@ import os
 import sys
 import threading
 from typing import Optional
-import anthropic
 from dotenv import load_dotenv
+
+# Load .env once at module level. load_dotenv() mutates os.environ which is
+# not thread-safe under concurrent client construction; runs at import time so
+# tests that need to control env should mock os.environ or patch before import.
+load_dotenv()
 
 from .rate_limiter import get_rate_limiter
 from .model_config import MODEL_PRIMARY, MODEL_AUXILIARY, MODEL_DEFAULT
@@ -282,7 +286,8 @@ class TokenTracker:
         """Total tokens (input + output)."""
         return self.total_input_tokens + self.total_output_tokens
 
-    def record_call(self, model: str, input_tokens: int, output_tokens: int) -> dict:
+    def record_call(self, model: str, input_tokens: int, output_tokens: int,
+                    cost_usd: float = None) -> dict:
         """
         Record a single LLM call.
 
@@ -290,17 +295,23 @@ class TokenTracker:
             model: Model identifier
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens
+            cost_usd: Actual cost from the SDK (`ResultMessage.total_cost_usd`).
+                      If provided, used directly. Otherwise we fall back to the
+                      static pricing table — kept only for legacy code paths.
 
         Returns:
             Dict with call details including cost
         """
-        # Get pricing for model
-        pricing = MODEL_PRICING.get(model, MODEL_PRICING["default"])
+        if cost_usd is not None:
+            total_cost = cost_usd
+        else:
+            # Get pricing for model
+            pricing = MODEL_PRICING.get(model, MODEL_PRICING["default"])
 
-        # Calculate cost (pricing is per million tokens)
-        input_cost = (input_tokens / 1_000_000) * pricing["input"]
-        output_cost = (output_tokens / 1_000_000) * pricing["output"]
-        total_cost = input_cost + output_cost
+            # Calculate cost (pricing is per million tokens)
+            input_cost = (input_tokens / 1_000_000) * pricing["input"]
+            output_cost = (output_tokens / 1_000_000) * pricing["output"]
+            total_cost = input_cost + output_cost
 
         call_record = {
             "model": model,
@@ -405,17 +416,38 @@ def reset_global_tracker():
     _global_tracker.reset()
 
 
+def _log_auth_mode():
+    """Print which auth mode the SDK will use (once per client creation)."""
+    local_mode = os.getenv("OPENANT_LOCAL_CLAUDE", "").lower() == "true"
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    config_dir = os.getenv("CLAUDE_CONFIG_DIR")
+    if local_mode:
+        if config_dir:
+            print(f"Using Claude Agent SDK (local session, config: {config_dir})", file=sys.stderr)
+        else:
+            print("Using Claude Agent SDK (local session)", file=sys.stderr)
+    elif api_key:
+        print("Using Claude Agent SDK (API key mode)", file=sys.stderr)
+    else:
+        print("Using Claude Agent SDK (local session)", file=sys.stderr)
+
+
 class AnthropicClient:
     """
-    Client for Anthropic Claude API.
+    Client for Claude API with automatic token tracking.
 
-    Uses Claude Opus 4 for vulnerability analysis.
-    Tracks token usage and costs for all calls.
+    Routes all calls through the Claude Agent SDK. Authentication is
+    automatic: uses ANTHROPIC_API_KEY if set, otherwise the local
+    Claude Code session.
+
+    The class name is kept as ``AnthropicClient`` to avoid churn in callers;
+    historically this wrapped the ``anthropic`` package but now wraps the
+    Claude Agent SDK helpers in this module.
     """
 
     def __init__(self, model: str = MODEL_DEFAULT, tracker: TokenTracker = None):
         """
-        Initialize the Anthropic client.
+        Initialize the client.
 
         Args:
             model: Model identifier. Defaults to MODEL_DEFAULT from model_config
@@ -423,16 +455,45 @@ class AnthropicClient:
                    the cost-effective option.
             tracker: Optional TokenTracker instance. Uses global tracker if not provided.
         """
-        load_dotenv()
-
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        if not api_key:
-            raise ValueError("ANTHROPIC_API_KEY not found in environment")
-
-        self.client = anthropic.Anthropic(api_key=api_key, max_retries=5)
+        _log_auth_mode()
         self.model = model
         self.tracker = tracker or _global_tracker
         self.last_call = None  # Store last call details
+
+    def _call(self, model: str, prompt: str, system: str = None,
+              max_tokens: int = 8192) -> str:
+        """Make an SDK call, track usage, and return the response text.
+
+        Rate-limit handling: ``_run_query`` raises ``sdk_errors.RateLimitError``
+        and notifies the GlobalRateLimiter; we don't need to catch it here.
+        """
+        # Wait if we're in a global backoff period
+        get_rate_limiter().wait_if_needed()
+
+        options = _build_options(
+            model=model,
+            system=system,
+            max_turns=1,
+            allowed_tools=[],
+        )
+        result_message, last_text = _run_query_sync(prompt, options)
+
+        # Extract usage and cost from SDK
+        usage = (result_message.usage or {}) if result_message else {}
+        input_tokens = usage.get("input_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0)
+        cost_usd = (result_message.total_cost_usd or 0.0) if result_message else None
+
+        self.last_call = self.tracker.record_call(
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cost_usd=cost_usd,
+        )
+
+        if result_message and result_message.result:
+            return result_message.result
+        return last_text
 
     async def analyze(self, prompt: str, max_tokens: int = 8192) -> str:
         """
@@ -445,34 +506,10 @@ class AnthropicClient:
         Returns:
             Response text from Claude
         """
-        # Wait if we're in a global backoff period
-        rate_limiter = get_rate_limiter()
-        rate_limiter.wait_if_needed()
+        return self._call(self.model, prompt, max_tokens=max_tokens)
 
-        try:
-            message = self.client.messages.create(
-                model=self.model,
-                max_tokens=max_tokens,
-                messages=[
-                    {"role": "user", "content": prompt}
-                ]
-            )
-        except anthropic.RateLimitError as exc:
-            # Report to global rate limiter so all workers back off
-            retry_after = float(exc.response.headers.get("retry-after", 0))
-            get_rate_limiter().report_rate_limit(retry_after)
-            raise
-
-        # Track token usage
-        self.last_call = self.tracker.record_call(
-            model=self.model,
-            input_tokens=message.usage.input_tokens,
-            output_tokens=message.usage.output_tokens
-        )
-
-        return message.content[0].text
-
-    def analyze_sync(self, prompt: str, max_tokens: int = 8192, model: str = None, system: str = None) -> str:
+    def analyze_sync(self, prompt: str, max_tokens: int = 8192,
+                     model: str = None, system: str = None) -> str:
         """
         Synchronous version of analyze.
 
@@ -485,38 +522,8 @@ class AnthropicClient:
         Returns:
             Response text from Claude
         """
-        used_model = model or self.model
-
-        kwargs = {
-            "model": used_model,
-            "max_tokens": max_tokens,
-            "messages": [
-                {"role": "user", "content": prompt}
-            ]
-        }
-        if system:
-            kwargs["system"] = system
-
-        # Wait if we're in a global backoff period
-        rate_limiter = get_rate_limiter()
-        rate_limiter.wait_if_needed()
-
-        try:
-            message = self.client.messages.create(**kwargs)
-        except anthropic.RateLimitError as exc:
-            # Report to global rate limiter so all workers back off
-            retry_after = float(exc.response.headers.get("retry-after", 0))
-            get_rate_limiter().report_rate_limit(retry_after)
-            raise
-
-        # Track token usage
-        self.last_call = self.tracker.record_call(
-            model=used_model,
-            input_tokens=message.usage.input_tokens,
-            output_tokens=message.usage.output_tokens
-        )
-
-        return message.content[0].text
+        return self._call(model or self.model, prompt, system=system,
+                          max_tokens=max_tokens)
 
     def get_last_call(self) -> Optional[dict]:
         """
@@ -544,18 +551,3 @@ class AnthropicClient:
             Dict with totals and calls list
         """
         return self.tracker.get_summary()
-
-    def get_usage(self, message) -> dict:
-        """
-        Extract token usage from a message response.
-
-        Args:
-            message: Response from messages.create()
-
-        Returns:
-            Dict with input_tokens, output_tokens
-        """
-        return {
-            "input_tokens": message.usage.input_tokens,
-            "output_tokens": message.usage.output_tokens
-        }

@@ -29,7 +29,6 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from anthropic import Anthropic
 from dotenv import load_dotenv
 
 # Ensure libs/openant-core is on sys.path so `utilities.*` imports resolve
@@ -39,6 +38,7 @@ if _OPENANT_CORE_ROOT not in sys.path:
     sys.path.insert(0, _OPENANT_CORE_ROOT)
 
 from utilities.model_config import MODEL_AUXILIARY  # noqa: E402
+from utilities.llm_client import AnthropicClient  # noqa: E402
 
 # Load environment variables
 load_dotenv()
@@ -511,18 +511,13 @@ def generate_application_context(
 
     # Call LLM
     print(f"Generating context with {model}...", file=sys.stderr)
-    client = Anthropic()
-    response = client.messages.create(
-        model=model,
+    # AnthropicClient is the SDK-backed wrapper; routes through the Claude
+    # Agent SDK so this works with both API keys and local Claude Code sessions.
+    client = AnthropicClient(model=model)
+    response_text = client.analyze_sync(
+        CONTEXT_GENERATION_PROMPT.format(sources=sources_text),
         max_tokens=2000,
-        messages=[{
-            "role": "user",
-            "content": CONTEXT_GENERATION_PROMPT.format(sources=sources_text)
-        }]
     )
-
-    # Parse response
-    response_text = response.content[0].text
 
     # Extract JSON from response
     json_match = re.search(r'```json\s*(.*?)\s*```', response_text, re.DOTALL)

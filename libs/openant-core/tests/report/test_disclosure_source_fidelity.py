@@ -21,16 +21,10 @@ import pytest
 _CORE_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_CORE_ROOT))
 
-# The project's venv has a broken `anthropic` install (ErrorObject import fails
-# in some sub-dependency). Stub it before `report.generator` is imported so the
-# test suite can run without touching the venv. Real API calls are never made
-# in this file — all disclosure generation is mocked.
-if "anthropic" not in sys.modules:
-    stub = types.ModuleType("anthropic")
-    stub.Anthropic = MagicMock()
-    stub.RateLimitError = type("RateLimitError", (Exception,), {})
-    stub.AuthenticationError = type("AuthenticationError", (Exception,), {})
-    sys.modules["anthropic"] = stub
+# Real API calls are never made in this file — all disclosure generation is
+# mocked. Following the SDK migration, generator.py routes through
+# AnthropicClient (which wraps the Claude Agent SDK), so we patch
+# AnthropicClient.analyze_sync rather than the legacy `anthropic.Anthropic`.
 
 from core import reporter  # noqa: E402
 from report import generator  # noqa: E402
@@ -280,36 +274,37 @@ def test_splice_preserves_other_sections():
 # the real code, even when the LLM returns fabricated code.
 # ---------------------------------------------------------------------------
 
-class _FakeAnthropic:
-    """Replacement for anthropic.Anthropic — returns fabricated code to prove
-    the post-processor catches it."""
+class _FakeAnthropicClient:
+    """Replacement for ``utilities.llm_client.AnthropicClient`` — returns
+    fabricated code to prove the post-processor catches it.
+
+    Mirrors the new SDK-backed surface (``analyze_sync``, ``get_last_call``)
+    rather than the legacy ``anthropic.Anthropic`` ``messages.create`` shape.
+    """
+
+    last_prompt = None
 
     def __init__(self, *args, **kwargs):
-        self.messages = self
+        pass
 
-    def create(self, **kwargs):
-        _FakeAnthropic.last_prompt = kwargs["messages"][0]["content"]
+    def analyze_sync(self, prompt, max_tokens=8192, model=None, system=None):
+        _FakeAnthropicClient.last_prompt = prompt
         # Return a disclosure WITH fabricated code — the post-processor must fix it.
-        return _FakeResponse()
+        return LLM_OUTPUT_WITH_FABRICATED_CODE
 
-
-class _FakeResponse:
-    class _Content:
-        text = LLM_OUTPUT_WITH_FABRICATED_CODE
-
-    content = [_Content()]
-
-    class _Usage:
-        input_tokens = 10
-        output_tokens = 50
-
-    usage = _Usage()
+    def get_last_call(self):
+        return {
+            "model": "fake",
+            "input_tokens": 10,
+            "output_tokens": 50,
+            "cost_usd": 0.0,
+        }
 
 
 @pytest.fixture
 def patched_anthropic(monkeypatch):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test-key")
-    monkeypatch.setattr(generator.anthropic, "Anthropic", _FakeAnthropic)
+    monkeypatch.setattr(generator, "AnthropicClient", _FakeAnthropicClient)
 
 
 def test_generate_disclosure_output_has_real_code(patched_anthropic, pipeline_output):
@@ -341,7 +336,7 @@ def test_generate_disclosure_prompt_has_no_source_code(patched_anthropic, pipeli
     )
 
     generator.generate_disclosure(ping, product_name="fixture")
-    prompt = _FakeAnthropic.last_prompt
+    prompt = _FakeAnthropicClient.last_prompt
 
     # The actual source code must not appear in the prompt.
     assert "subprocess.check_output" not in prompt, (
