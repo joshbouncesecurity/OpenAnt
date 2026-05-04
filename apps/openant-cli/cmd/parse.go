@@ -99,7 +99,7 @@ func runParse(cmd *cobra.Command, args []string) {
 	if parseLanguage != "auto" {
 		pyArgs = append(pyArgs, "--language", parseLanguage)
 	}
-	if parseLevel != "all" {
+	if parseLevel != "reachable" {
 		pyArgs = append(pyArgs, "--level", parseLevel)
 	}
 	if manifestPath != "" {
