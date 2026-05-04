@@ -206,6 +206,49 @@ queryBuilder.post('users', () => {});
     )
 
 
+def test_synthetic_handlers_have_call_graph_entries(tmp_path):
+    """Synthetic Express handlers must also appear as callGraph keys.
+
+    Regression for the invariant `len(callGraph) == len(functions)` that
+    other tests (e.g. test_js_parser.test_builds_call_graph) rely on.
+    """
+    file_path = _write_fixture(
+        tmp_path,
+        "callgraph_invariant",
+        """
+const express = require('express');
+const router = express.Router();
+
+function authenticateToken(req, res, next) { next(); }
+
+router.post('/orders', authenticateToken, async (req, res) => {
+  const { productId, quantity } = req.body;
+  res.json({ productId, quantity });
+});
+
+module.exports = router;
+""",
+    )
+    repo = file_path.parent
+    out = _analyze(repo, file_path)
+
+    express_funcs = {k: v for k, v in out["functions"].items() if "express(" in k}
+    assert len(express_funcs) == 1
+
+    # Every synthetic Express function must have a callGraph entry.
+    for fid in express_funcs:
+        assert fid in out["callGraph"], (
+            f"synthetic function {fid} missing from callGraph; "
+            f"callGraph keys={list(out['callGraph'])}"
+        )
+
+    # Global invariant: callGraph keys ≡ functions keys.
+    assert len(out["callGraph"]) == len(out["functions"]), (
+        f"callGraph/functions size mismatch: "
+        f"{len(out['callGraph'])} vs {len(out['functions'])}"
+    )
+
+
 def test_named_handler_no_anonymous_unit(tmp_path):
     """router.get('/x', namedHandler) — no anon unit synthesised."""
     file_path = _write_fixture(

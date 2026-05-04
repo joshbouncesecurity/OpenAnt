@@ -452,6 +452,17 @@ class TypeScriptAnalyzer {
           },
           explicitCalls: explicitCalls,
         };
+
+        // Emit a callGraph entry for the synthesised callback so the
+        // invariant `callGraph keys ≡ functions keys` holds. The named
+        // middleware identifiers are recorded as upstream dependencies via
+        // explicitCalls (merged downstream by dependency_resolver.js); here
+        // we capture any inline call expressions from the callback body so
+        // call-graph based analyses can see them too.
+        this.callGraph[functionId] = this.extractCallsFromFunction(
+          arg,
+          relativePath,
+        );
       }
     }
   }
