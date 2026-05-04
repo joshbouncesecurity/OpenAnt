@@ -117,9 +117,11 @@ def _build_error_info(exc: Exception) -> dict:
                 # Malformed SDK response — treat as transient.
                 info["type"] = "connection"
             elif isinstance(exc, CLINotFoundError):
-                # `claude` binary missing — not retryable; surface as auth-class
-                # (caller-fixable config issue).
-                info["type"] = "auth"
+                # `claude` binary missing — environmental/config issue, not
+                # retryable. Leave type as "unknown" (default); the
+                # exception_class field carries the precise diagnostic so
+                # operators can distinguish from API-side auth failures.
+                pass
         except ImportError:  # pragma: no cover
             pass
         # Plain TimeoutError still matches the "timeout" retry path.

@@ -455,7 +455,12 @@ def _log_auth_mode():
         elif api_key:
             print("Using Claude Agent SDK (API key mode)", file=sys.stderr)
         else:
-            print("Using Claude Agent SDK (local session)", file=sys.stderr)
+            # No auth path explicitly configured. The SDK will fall back to
+            # whatever the local `claude` CLI finds; warn the user so an
+            # eventual auth failure is not a surprise.
+            print("Warning: neither ANTHROPIC_API_KEY nor OPENANT_LOCAL_CLAUDE=true set; "
+                  "Claude Agent SDK will rely on the local `claude` CLI's own auth state.",
+                  file=sys.stderr)
         _auth_mode_logged = True
 
 

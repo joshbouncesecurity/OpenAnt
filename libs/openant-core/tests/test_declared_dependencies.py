@@ -26,6 +26,7 @@ DIST_TO_IMPORT = {
     "tree-sitter-cpp": "tree_sitter_cpp",
     "tree-sitter-ruby": "tree_sitter_ruby",
     "tree-sitter-php": "tree_sitter_php",
+    "tree-sitter-zig": "tree_sitter_zig",
 }
 
 
