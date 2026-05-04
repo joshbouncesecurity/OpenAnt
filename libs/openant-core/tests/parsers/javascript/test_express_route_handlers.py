@@ -249,6 +249,129 @@ module.exports = router;
     )
 
 
+def test_typescript_typed_callback(tmp_path):
+    """TS callback with type annotations:
+    `(req: Request, res: Response, next: NextFunction) => {...}`.
+
+    Type annotations on the parameters and return type must not prevent
+    the AST walk from recognising the callback as an ArrowFunction.
+    """
+    repo = tmp_path / "ts_typed"
+    repo.mkdir(parents=True, exist_ok=True)
+    file_path = repo / "server.ts"
+    file_path.write_text(
+        """
+import express, { Request, Response, NextFunction } from 'express';
+const app = express();
+
+function authenticateToken(req: Request, res: Response, next: NextFunction): void { next(); }
+
+app.post('/orders', authenticateToken, async (req: Request, res: Response): Promise<void> => {
+  const { productId, quantity } = req.body;
+  res.json({ productId, quantity });
+});
+
+export default app;
+"""
+    )
+    out = _analyze(repo, file_path)
+    express_funcs = {k: v for k, v in out["functions"].items() if "express(" in k}
+    assert len(express_funcs) == 1, (
+        f"expected 1 anon TS handler, got {express_funcs}"
+    )
+    fid, fdata = next(iter(express_funcs.items()))
+    assert fdata["unitType"] == "route_handler"
+    assert fdata["isEntryPoint"] is True
+    meta = fdata["routeMetadata"]
+    assert meta["http_method"] == "POST"
+    assert meta["http_path"] == "/orders"
+    assert meta["named_middleware"] == ["authenticateToken"]
+
+
+def test_dynamic_path_does_not_crash(tmp_path):
+    """`app.get('/' + prefix, handler)` — first arg isn't a string literal.
+
+    The extractor should skip such calls without throwing. We can't
+    reliably extract a path from a runtime-built expression.
+    """
+    file_path = _write_fixture(
+        tmp_path,
+        "dynamic_path",
+        """
+const express = require('express');
+const app = express();
+const prefix = 'foo';
+app.get('/' + prefix, (req, res) => res.send('ok'));
+module.exports = app;
+""",
+    )
+    repo = file_path.parent
+    out = _analyze(repo, file_path)
+    express_funcs = {k: v for k, v in out["functions"].items() if "express(" in k}
+    assert express_funcs == {}, (
+        f"dynamic path should be skipped, got {list(express_funcs)}"
+    )
+
+
+def test_use_no_path_anonymous_middleware(tmp_path):
+    """`app.use((req, res, next) => {...})` — middleware with no path.
+
+    The synthetic unit should be emitted with http_path=null and
+    http_method='USE'.
+    """
+    file_path = _write_fixture(
+        tmp_path,
+        "use_no_path",
+        """
+const express = require('express');
+const app = express();
+app.use((req, res, next) => { req.start = Date.now(); next(); });
+module.exports = app;
+""",
+    )
+    repo = file_path.parent
+    out = _analyze(repo, file_path)
+    express_funcs = {k: v for k, v in out["functions"].items() if "express(" in k}
+    assert len(express_funcs) == 1, (
+        f"expected 1 anon middleware unit, got {list(express_funcs)}"
+    )
+    fid, fdata = next(iter(express_funcs.items()))
+    meta = fdata["routeMetadata"]
+    assert meta["http_method"] == "USE"
+    assert meta["http_path"] is None
+
+
+def test_anon_middleware_named_handler_mixed(tmp_path):
+    """`app.get(path, anonMw, namedHandler)` — anon middleware before
+    named handler. Anon gets a route_middleware unit; the named handler
+    is left to the regular extractor (no synthetic unit for it)."""
+    file_path = _write_fixture(
+        tmp_path,
+        "mixed",
+        """
+const express = require('express');
+const app = express();
+function namedHandler(req, res) { res.send('ok'); }
+app.get('/x', (req, res, next) => { console.log('mw'); next(); }, namedHandler);
+module.exports = app;
+""",
+    )
+    repo = file_path.parent
+    out = _analyze(repo, file_path)
+    express_funcs = {k: v for k, v in out["functions"].items() if "express(" in k}
+    assert len(express_funcs) == 1, (
+        f"expected 1 anon middleware unit, got {list(express_funcs)}"
+    )
+    fid, fdata = next(iter(express_funcs.items()))
+    assert fdata["unitType"] == "route_middleware"
+    # named_middleware should include the namedHandler sibling
+    assert fdata["routeMetadata"]["named_middleware"] == ["namedHandler"]
+    # namedHandler must still be extracted normally
+    assert any(
+        f.get("name") == "namedHandler" for f in out["functions"].values()
+    )
+
+
 def test_named_handler_no_anonymous_unit(tmp_path):
     """router.get('/x', namedHandler) — no anon unit synthesised."""
     file_path = _write_fixture(
