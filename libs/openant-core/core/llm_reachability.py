@@ -289,9 +289,14 @@ def parse_response(
 
 
 def _chunk(items: List[Any], size: int) -> List[List[Any]]:
-    return [items[i : i + size]] if size <= 0 else [
-        items[i : i + size] for i in range(0, len(items), size)
-    ]
+    """Split ``items`` into batches of ``size``.
+
+    A non-positive ``size`` is treated as "everything in one batch" so callers
+    that disable batching never hit a NameError or empty-output surprise.
+    """
+    if size <= 0:
+        return [list(items)] if items else []
+    return [items[i : i + size] for i in range(0, len(items), size)]
 
 
 def analyze_reachability(

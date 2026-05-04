@@ -240,6 +240,15 @@ class TestAnalyzeReachability:
         # 7 units / 3 per batch = 3 calls
         assert len(client.calls) == 3
 
+    def test_non_positive_batch_size_uses_single_batch(self):
+        """``batch_size <= 0`` historically tripped a NameError. Guard the
+        contract: non-positive size collapses to a single batch covering all
+        units (and never raises)."""
+        dataset = {"units": [_make_unit(f"a:{i}") for i in range(4)]}
+        client = FakeClient(['{"signals": []}'])
+        analyze_reachability(dataset, client=client, batch_size=0)
+        assert len(client.calls) == 1
+
     def test_client_exception_does_not_crash(self):
         class Boom:
             def analyze_sync(self, *a, **kw):

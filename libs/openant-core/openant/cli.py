@@ -995,7 +995,8 @@ def main():
         dest="llm_reachability",
         help="Enable the LLM reachability review stage (Opus). "
              "Surfaces additional entry points and external-input sites "
-             "beyond the structural pass. Off by default (cost-controlled).",
+             "beyond the structural pass. Off by default — enabling this "
+             "may incur additional LLM cost (one Opus call per ~25 units).",
     )
     scan_p.set_defaults(func=cmd_scan)
 

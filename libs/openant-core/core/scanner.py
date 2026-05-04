@@ -173,6 +173,11 @@ def scan_repository(
     # Active dataset path — may be updated by enhance step
     active_dataset_path = parse_result.dataset_path
 
+    # Forward-declared so step 1.5 (LLM reachability) can reference it before
+    # step 2 (app-context) populates it. The LLM reachability block uses
+    # app_context only if a file already exists on disk from a prior run.
+    app_context_path: str | None = None
+
     # ---------------------------------------------------------------
     # Step 1.5: LLM Reachability review (optional, opt-in)
     # ---------------------------------------------------------------
@@ -254,7 +259,6 @@ def scan_repository(
     # ---------------------------------------------------------------
     # Step 2: Application Context (optional)
     # ---------------------------------------------------------------
-    app_context_path = None
     if generate_context and HAS_APP_CONTEXT:
         print(_step_label("Generating application context..."), file=sys.stderr)
 
