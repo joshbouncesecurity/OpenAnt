@@ -451,11 +451,15 @@ def _file_lock(lock_path: Path):
     OS-level lock matters for mutual exclusion.
     """
     lock_path.parent.mkdir(parents=True, exist_ok=True)
-    f = open(lock_path, "a+")
+    # "w" (not "a+") so the file pointer is at byte 0 — msvcrt.locking locks a
+    # range starting at the *current* file position, so different positions
+    # would mean non-overlapping (i.e. non-exclusive) locks.
+    f = open(lock_path, "w")
     try:
         if os.name == "nt":
             import msvcrt
 
+            f.seek(0)
             # LK_LOCK blocks (with retries) until the byte range is exclusive.
             msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
             try:
