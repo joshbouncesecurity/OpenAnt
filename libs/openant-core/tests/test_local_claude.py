@@ -14,6 +14,7 @@ from utilities.llm_client import (
     AnthropicClient,
     TokenTracker,
 )
+from utilities.model_config import MODEL_PRIMARY, MODEL_AUXILIARY
 
 
 # ---------------------------------------------------------------------------
@@ -75,8 +76,8 @@ class TestBuildEnv:
 
 class TestBuildOptions:
     def test_sets_model(self):
-        opts = _build_options("claude-opus-4-6")
-        assert opts.model == "claude-opus-4-6"
+        opts = _build_options(MODEL_PRIMARY)
+        assert opts.model == MODEL_PRIMARY
 
     def test_sets_system_prompt(self):
         opts = _build_options("m", system="You are a security analyst.")
@@ -117,7 +118,7 @@ class TestAnthropicClientTokenTracking:
         )
 
         tracker = TokenTracker()
-        client = AnthropicClient(model="claude-sonnet-4-6", tracker=tracker)
+        client = AnthropicClient(model=MODEL_AUXILIARY, tracker=tracker)
         result = client.analyze_sync("test")
 
         assert result == "ok"
@@ -135,7 +136,7 @@ class TestAnthropicClientTokenTracking:
         )
 
         tracker = TokenTracker()
-        client = AnthropicClient(model="claude-sonnet-4-6", tracker=tracker)
+        client = AnthropicClient(model=MODEL_AUXILIARY, tracker=tracker)
         client.analyze_sync("test")
 
         assert tracker.total_cost_usd == 0.0042
@@ -147,7 +148,7 @@ class TestAnthropicClientTokenTracking:
             "ok",
         )
 
-        client = AnthropicClient(model="claude-sonnet-4-6")
+        client = AnthropicClient(model=MODEL_AUXILIARY)
         client.analyze_sync("test")
 
         last = client.get_last_call()
@@ -163,7 +164,7 @@ class TestAnthropicClientTokenTracking:
             "Fallback text",
         )
 
-        client = AnthropicClient(model="claude-sonnet-4-6")
+        client = AnthropicClient(model=MODEL_AUXILIARY)
         result = client.analyze_sync("test")
 
         assert result == "Fallback text"
@@ -187,7 +188,7 @@ class TestRunNativeVerification:
         )
 
         result = run_native_verification(
-            prompt="Verify this", system="sys", model="claude-opus-4-6",
+            prompt="Verify this", system="sys", model=MODEL_PRIMARY,
             repo_path="/tmp/repo",
         )
 
@@ -221,14 +222,14 @@ class TestRunNativeVerification:
         run_native_verification(
             prompt="Verify this finding",
             system="You are a pentester.",
-            model="claude-opus-4-6",
+            model=MODEL_PRIMARY,
             repo_path="/tmp/target-repo",
             max_budget_usd=5.0,
         )
 
         prompt, options = mock_query.call_args[0]
         assert prompt == "Verify this finding"
-        assert options.model == "claude-opus-4-6"
+        assert options.model == MODEL_PRIMARY
         assert options.system_prompt == "You are a pentester."
         assert options.max_turns is None  # Multi-turn
         assert "Read" in options.allowed_tools
@@ -449,7 +450,7 @@ class TestTokenTrackerRestoreFrom:
             "total_output_tokens": 500,
             "total_cost_usd": 0.05,
         })
-        tracker.record_call("claude-sonnet-4-6", 200, 100, cost_usd=0.01)
+        tracker.record_call(MODEL_AUXILIARY, 200, 100, cost_usd=0.01)
 
         assert tracker.total_input_tokens == 1200
         assert tracker.total_output_tokens == 600

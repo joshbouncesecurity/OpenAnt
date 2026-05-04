@@ -210,7 +210,7 @@ def run_native_verification(
     Args:
         prompt: The verification prompt.
         system: System prompt for the session.
-        model: Model to use (e.g. "claude-opus-4-6").
+        model: Model to use (typically MODEL_PRIMARY from utilities.model_config).
         repo_path: Path to the repository root.
         json_schema: Optional JSON schema for structured output.
         max_budget_usd: Maximum dollar budget per finding.
@@ -280,6 +280,17 @@ class TokenTracker:
             self.total_input_tokens = 0
             self.total_output_tokens = 0
             self.total_cost_usd = 0.0
+
+    def restore_from(self, totals: dict):
+        """Restore counters from a previously saved totals dict (e.g. checkpoint).
+
+        Args:
+            totals: Dict with total_input_tokens, total_output_tokens, total_cost_usd.
+        """
+        with self._lock:
+            self.total_input_tokens = totals.get("total_input_tokens", 0)
+            self.total_output_tokens = totals.get("total_output_tokens", 0)
+            self.total_cost_usd = totals.get("total_cost_usd", 0.0)
 
     @property
     def total_tokens(self) -> int:
