@@ -5,6 +5,25 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    name: Lint (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint Python (undefined names, syntax errors)
+        working-directory: libs/openant-core
+        run: ruff check .
+
   python-tests:
     name: Python tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -36,10 +55,6 @@ jobs:
       - name: Install Python dependencies
         working-directory: libs/openant-core
         run: pip install -r requirements.txt && pip install ".[dev]"
-
-      - name: Lint Python (undefined names, syntax errors)
-        working-directory: libs/openant-core
-        run: ruff check .
 
       - name: Cache JS parser node_modules
         id: cache-node-modules
