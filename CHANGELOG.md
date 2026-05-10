@@ -2,6 +2,59 @@
 
 All notable changes to OpenAnt are documented in this file.
 
+## [2026-05-10] — Windows compatibility & CI hardening
+
+### Fixed
+
+- **JavaScript parser no longer returns zero functions on Windows.**
+  `path.relative()` and `path.resolve()` produce backslash-separated
+  paths there, and ts-morph treats `\` as an escape character when
+  matching paths it has already added — the analyzer silently emitted
+  an empty result. The TypeScript analyzer now normalises every path
+  it hands to ts-morph (and every value stored as a `functionId`
+  component) to forward slashes via a `toPosixPath()` helper. A
+  static-scanner test in `libs/openant-core/tests/test_windows_path_handling.py`
+  enforces the contract on every commit.
+- **`--files-from` no longer drops every path on Windows.** File lists
+  written with CRLF line endings used to leave a trailing `\r` on each
+  entry, which `addSourceFileAtPath` then failed to resolve. The
+  TypeScript analyzer now splits on `/\r?\n/` and trims each line.
+- **Pipeline status output no longer crashes on cp1252 consoles.**
+  `parsers/{javascript,go}/test_pipeline.py` previously printed
+  `✓ ✗ →` directly, which raised `UnicodeEncodeError` on the Windows
+  default code page. Both pipelines now probe `sys.stdout.encoding` at
+  import time and fall back to ASCII (`OK` / `FAIL` / `->`) only when
+  the terminal can't encode the Unicode glyphs — UTF-8 terminals keep
+  the prettier output.
+- **`'charmap' codec can't decode byte ...` errors on Windows.** Bare
+  `open()` calls and `subprocess.run(..., text=True)` invocations
+  across `libs/openant-core/` defaulted to the system locale encoding
+  (cp1252 on Windows), crashing on any source code containing non-ASCII
+  characters (curly quotes U+2019, accented characters, CJK). All ~190
+  call sites now go through new helpers in
+  `libs/openant-core/utilities/file_io.py` (`open_utf8`, `read_json`,
+  `write_json`, `run_utf8`) that pin UTF-8 explicitly. Four regression
+  scanners in `tests/test_file_io.py` prevent reintroduction by failing
+  CI on any new bare `open(`, `.read_text(`/`.write_text(`, `.open(`,
+  or `subprocess.run(..., text=True)` call without an explicit
+  `encoding=`.
+- **Token tracker NameError on resume.** `core/analyzer.py` called
+  `tracker.add_prior_usage(...)` without `tracker` being defined in the
+  surrounding `run_analysis()` function. The path was reached only when
+  resuming a scan with non-zero prior token usage — a dormant bug
+  uncovered by the new lint step. Now uses `get_global_tracker()` to
+  match the existing pattern in the same function.
+
+### Added
+
+- **CI now lints for missing imports and undefined names.** A
+  `ruff check .` step runs in the `python-tests` job before `pytest`,
+  with `select = ["F821", "F811"]` (undefined name, redefined unused
+  name). Both rules are zero-false-positive runtime-bug catchers, so
+  contributors get fast static feedback on the kind of mistake Python
+  won't surface until the affected code path executes. Scoped narrowly
+  on purpose — widening to additional pyflakes rules can come later.
+
 ## [2026-05-07] — Incremental scans + scan pipeline rewire
 
 ### Changed
