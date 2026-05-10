@@ -13,7 +13,6 @@ Outputs dataset.json in the same format as the JavaScript parser.
 import ast
 import json
 import os
-from utilities.file_io import open_utf8
 import re
 import sys
 from pathlib import Path

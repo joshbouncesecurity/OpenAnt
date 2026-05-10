@@ -13,7 +13,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from .schema import validate_pipeline_output, ValidationError
-from utilities.file_io import read_json
+from utilities.file_io import open_utf8, read_json
 
 load_dotenv()
 
