@@ -156,7 +156,11 @@ def test_run_utf8_caller_can_override_errors_default_strict():
 def test_run_utf8_does_not_override_explicit_encoding():
     """If caller passes encoding= explicitly, run_utf8 must not overwrite it."""
     result = run_utf8(
-        [sys.executable, "-c", "print('caf\\xe9')"],
+        [
+            sys.executable,
+            "-c",
+            "import sys; sys.stdout.buffer.write('café\\n'.encode('latin-1'))",
+        ],
         capture_output=True,
         text=True,
         encoding="latin-1",
