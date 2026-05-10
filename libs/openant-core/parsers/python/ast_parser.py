@@ -13,10 +13,12 @@ Outputs dataset.json in the same format as the JavaScript parser.
 import ast
 import json
 import os
+from utilities.file_io import open_utf8
 import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
+from utilities.file_io import read_json, write_json, open_utf8
 
 
 class PythonRouteParser:
@@ -35,7 +37,8 @@ class PythonRouteParser:
 
         for f in files:
             try:
-                content = f.read_text()
+                with open_utf8(f, errors="replace") as _f:
+                    content = _f.read()
                 if "from django" in content or "django.urls" in content:
                     return "django"
                 if "from flask" in content or "Flask(" in content:
@@ -76,7 +79,8 @@ class PythonRouteParser:
         path_str = str(file_path)
         if path_str not in self.file_cache:
             try:
-                self.file_cache[path_str] = file_path.read_text()
+                with open_utf8(file_path, errors="replace") as _f:
+                    self.file_cache[path_str] = _f.read()
             except Exception as e:
                 print(f"Error reading {file_path}: {e}")
                 self.file_cache[path_str] = ""
@@ -461,8 +465,7 @@ def main():
     result = parser.parse()
 
     if output_file:
-        with open(output_file, 'w') as f:
-            json.dump(result, f, indent=2)
+        write_json(output_file, result)
         print(f"Output written to {output_file}")
     else:
         print(json.dumps(result, indent=2))
