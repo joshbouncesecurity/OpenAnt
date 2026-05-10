@@ -112,6 +112,10 @@ jobs:
         working-directory: apps/openant-cli
         run: go vet ./...
 
+      - name: Run Go unit tests
+        working-directory: apps/openant-cli
+        run: go test ./... -v
+
       - name: Build (Linux/macOS)
         if: runner.os != 'Windows'
         working-directory: apps/openant-cli

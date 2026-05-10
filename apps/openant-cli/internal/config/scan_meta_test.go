@@ -3,16 +3,22 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
 
-// withTempHome points HOME at a temp dir for the duration of the test so
-// ProjectDir / ScanRunDir resolve under there. Restores HOME on cleanup.
+// withTempHome points the home directory at a temp dir for the duration of the test so
+// ProjectDir / ScanRunDir resolve under there. Restores on cleanup.
+// On Unix: sets HOME. On Windows: sets USERPROFILE.
 func withTempHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", dir)
+	} else {
+		t.Setenv("HOME", dir)
+	}
 	return dir
 }
 
