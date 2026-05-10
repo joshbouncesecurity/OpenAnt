@@ -104,14 +104,31 @@ def test_analyze_sync_raises_on_auth_error():
 
     from utilities.llm_client import AnthropicClient
 
-    AuthError = sys.modules["anthropic"].AuthenticationError
+    # Remove the mock from sys.modules to get the real anthropic SDK
+    mock_anthropic = sys.modules.pop("anthropic", None)
+    try:
+        import importlib
+        importlib.invalidate_caches()
+        from anthropic import AuthenticationError
+        import httpx
 
-    client = AnthropicClient.__new__(AnthropicClient)
-    client.client = MagicMock()
-    client.client.messages.create.side_effect = AuthError("invalid x-api-key")
-    client.model = "claude-haiku-4-5-20251001"
-    client.tracker = MagicMock()
-    client.last_call = None
+        # Create a mock response object for the APIStatusError
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.status_code = 401
+        mock_response.headers = {"request-id": "test-123"}
 
-    with pytest.raises(AuthError):
-        client.analyze_sync("test prompt")
+        client = AnthropicClient.__new__(AnthropicClient)
+        client.client = MagicMock()
+        # Create the error with the correct signature
+        error = AuthenticationError(message="invalid x-api-key", response=mock_response, body={"error": "invalid_api_key"})
+        client.client.messages.create.side_effect = error
+        client.model = "claude-haiku-4-5-20251001"
+        client.tracker = MagicMock()
+        client.last_call = None
+
+        with pytest.raises(AuthenticationError):
+            client.analyze_sync("test prompt")
+    finally:
+        # Restore the mock for other tests
+        if mock_anthropic is not None:
+            sys.modules["anthropic"] = mock_anthropic

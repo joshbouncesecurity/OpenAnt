@@ -42,6 +42,13 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Set
+
+# Add parent directories to path so utilities can be found when run as a subprocess
+_parser_dir = Path(__file__).parent
+_core_root = _parser_dir.parent.parent
+if str(_core_root) not in sys.path:
+    sys.path.insert(0, str(_core_root))
+
 from utilities.file_io import open_utf8, read_json, run_utf8, write_json
 
 
