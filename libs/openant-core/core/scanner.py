@@ -233,6 +233,7 @@ def scan_repository(
     # look for HTTP handlers").
     if llm_reachability:
         from core.llm_reachability import (
+            MODEL_PRIMARY as _LLM_REACH_MODEL,
             analyze_reachability,
             apply_signals,
             signals_to_json,
@@ -242,7 +243,7 @@ def scan_repository(
 
         with step_context("llm-reachability", output_dir, inputs={
             "dataset_path": active_dataset_path,
-            "model": "opus",
+            "model": _LLM_REACH_MODEL,
         }) as ctx:
             try:
                 with open(active_dataset_path, encoding="utf-8") as f:
@@ -261,10 +262,12 @@ def scan_repository(
                     except (OSError, json.JSONDecodeError):
                         app_ctx_payload = None
 
+                # --limit governs the analyze stage, not how many units the
+                # LLM reachability pass reviews — it must see the full
+                # codebase to find missed entry points.
                 signals = analyze_reachability(
                     dataset=dataset,
                     app_context=app_ctx_payload,
-                    max_units=limit,
                 )
                 summary = apply_signals(dataset, signals)
 
@@ -277,29 +280,50 @@ def scan_repository(
                     )
 
                 pre_filter_count = len(dataset.get("units", []))
+                post_filter_count = pre_filter_count
+                refilter_supported = False
 
                 # Re-apply the structural reachability filter using
                 # LLM-promoted entry points as additional BFS seeds.
+                # Only possible when call_graph.json was written by the parser
+                # (Python and Zig paths do this; JS/Go/C/Ruby/PHP handle
+                # reachability filtering internally and don't persist it).
                 if processing_level != "all":
-                    from core.parser_adapter import apply_reachability_filter
-                    llm_promoted_ids = {
-                        u["id"] for u in dataset.get("units", [])
-                        if u.get("is_entry_point") and u.get("id")
-                    }
-                    dataset = apply_reachability_filter(
-                        dataset,
-                        output_dir,
-                        processing_level,
-                        extra_entry_points=llm_promoted_ids,
-                    )
-                    result.units_count = len(dataset.get("units", []))
+                    call_graph_path = os.path.join(output_dir, "call_graph.json")
+                    if os.path.exists(call_graph_path):
+                        from core.parser_adapter import apply_reachability_filter
+                        llm_promoted_ids = {
+                            u["id"] for u in dataset.get("units", [])
+                            if u.get("is_entry_point") and u.get("id")
+                        }
+                        dataset = apply_reachability_filter(
+                            dataset,
+                            output_dir,
+                            processing_level,
+                            extra_entry_points=llm_promoted_ids,
+                        )
+                        post_filter_count = len(dataset.get("units", []))
+                        result.units_count = post_filter_count
+                        refilter_supported = True
+                    else:
+                        # Parser doesn't persist call_graph.json — the full
+                        # unfiltered dataset will flow to downstream stages.
+                        # Warn loudly so the cost impact is visible.
+                        print(
+                            f"\n  WARNING: --llm-reachability with "
+                            f"--level {processing_level}: "
+                            f"{parse_result.language} does not yet support "
+                            f"post-LLM re-filtering (call_graph.json not found). "
+                            f"Downstream stages will process all "
+                            f"{pre_filter_count} units instead of the filtered "
+                            f"subset — this may significantly increase cost.",
+                            file=sys.stderr,
+                        )
 
                 # Persist final dataset so downstream stages see promoted
                 # entry points, per-unit signals, and the applied filter.
                 with open(active_dataset_path, "w", encoding="utf-8") as f:
                     json.dump(dataset, f, indent=2)
-
-                post_filter_count = len(dataset.get("units", []))
 
                 ctx.summary = {
                     "units_reviewed": pre_filter_count,
@@ -307,6 +331,7 @@ def scan_repository(
                     "entry_points_promoted": summary["entry_points_promoted"],
                     "units_touched": summary["units_touched"],
                     "post_filter_units": post_filter_count,
+                    "refilter_supported": refilter_supported,
                 }
                 ctx.outputs = {"signals_path": signals_path}
 
@@ -315,7 +340,7 @@ def scan_repository(
                     f"{summary['entry_points_promoted']} new entry points",
                     file=sys.stderr,
                 )
-                if processing_level != "all":
+                if processing_level != "all" and refilter_supported:
                     print(
                         f"  After reachability filter: {post_filter_count} units",
                         file=sys.stderr,

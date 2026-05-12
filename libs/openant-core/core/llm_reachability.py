@@ -44,12 +44,12 @@ from __future__ import annotations
 import json
 import re
 import sys
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from typing import Any, Callable, Dict, List, Optional
 
 
-# Models — matches the convention in core/analyzer.py / utilities/llm_client.py.
-MODEL_PRIMARY = "claude-opus-4-20250514"
+# Models — aligns with core/analyzer.py which uses "claude-opus-4-6" for Opus.
+MODEL_PRIMARY = "claude-opus-4-6"
 MODEL_SECONDARY = "claude-sonnet-4-20250514"
 
 
@@ -171,7 +171,7 @@ def _unit_for_prompt(unit: Dict[str, Any]) -> Dict[str, Any]:
         "unit_id": unit.get("id", ""),
         "unit_type": unit.get("unit_type", "function"),
         "is_entry_point": bool(unit.get("is_entry_point", False)),
-        "reachable_from_entry": unit.get("reachable_from_entry"),
+        "reachable": unit.get("reachable"),
         "code": _trim_code(code_blob),
     }
 
@@ -430,6 +430,7 @@ def apply_signals(
             and not unit.get("is_entry_point", False)
         ):
             unit["is_entry_point"] = True
+            unit["entry_point_reason"] = f"llm_reachability: {sig.reason}"
             promoted += 1
 
     return {
