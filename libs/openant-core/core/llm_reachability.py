@@ -1,9 +1,9 @@
 """
 LLM-based reachability review stage.
 
-A complementary, advisory pass over the parsed dataset that uses a strong
-LLM (Opus by default) to surface additional reachability signals beyond
-what the structural reachability analysis catches:
+A complementary, advisory pass over the **full, unfiltered** codebase that
+uses a strong LLM (Opus by default) to surface reachability signals beyond
+what the structural analysis catches:
 
 - Likely entry points the structural pass missed (framework-specific
   handlers, plugin registrations, lambdas, message handlers, etc.).
@@ -11,10 +11,19 @@ what the structural reachability analysis catches:
   reads, env/argv, IPC channels).
 - Cross-process or async data flow indicators.
 
-Signals are **advisory only** — they may PROMOTE a unit's reachability
-(e.g. set ``is_entry_point = True`` for a unit the structural pass didn't
-flag), but they never DEMOTE a unit that structural analysis already
-kept. This matches the "complements, not replaces" intent in issue #17.
+Pipeline ordering (managed by ``core/scanner.py``):
+
+1. Parse with ``processing_level="all"`` so every unit is available.
+2. ``analyze_reachability`` reviews all units and returns signals.
+3. ``apply_signals`` promotes high-confidence ``entry_point`` signals by
+   setting ``is_entry_point=True`` on the target unit.
+4. The structural reachability filter re-runs with LLM-promoted entry
+   points added as extra BFS seeds, yielding a dataset filtered to the
+   user's requested ``processing_level`` but expanded by LLM findings.
+
+Signals are **promote-only** — they never DEMOTE a unit that structural
+analysis already kept. This matches the "complements, not replaces" intent
+in issue #17.
 
 Output:
 - ``analyze_reachability(...)`` returns a list of ``ReachabilitySignal``

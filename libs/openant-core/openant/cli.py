@@ -994,9 +994,12 @@ def main():
         action="store_true",
         dest="llm_reachability",
         help="Enable the LLM reachability review stage (Opus). "
-             "Surfaces additional entry points and external-input sites "
-             "beyond the structural pass. Off by default — enabling this "
-             "may incur additional LLM cost (one Opus call per ~25 units).",
+             "Surfaces entry points and external-input sites the structural "
+             "pass would miss by reviewing the full codebase before the "
+             "reachability filter is applied. Off by default — enabling "
+             "this incurs cost proportional to total repo size, not the "
+             "filtered unit count (~one Opus call per 25 units across the "
+             "whole codebase).",
     )
     scan_p.set_defaults(func=cmd_scan)
 

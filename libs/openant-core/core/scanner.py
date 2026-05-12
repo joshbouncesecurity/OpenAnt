@@ -126,19 +126,31 @@ def scan_repository(
     # ---------------------------------------------------------------
     from core.parser_adapter import parse_repository
 
+    # When LLM reachability is enabled the stage must see ALL units so it can
+    # identify entry points the structural pass would miss.  Parse with "all"
+    # here; the structural filter is re-applied after LLM signals are merged.
+    effective_parse_level = (
+        "all" if (llm_reachability and processing_level != "all") else processing_level
+    )
+
     print(_step_label("Parsing repository..."), file=sys.stderr)
+    if effective_parse_level != processing_level:
+        print(
+            "  [LLM reachability] parsing all units; structural filter runs after LLM signals",
+            file=sys.stderr,
+        )
 
     with step_context("parse", output_dir, inputs={
         "repo_path": repo_path,
         "language": language,
-        "processing_level": processing_level,
+        "processing_level": effective_parse_level,
         "skip_tests": skip_tests,
     }) as ctx:
         parse_result = parse_repository(
             repo_path=repo_path,
             output_dir=output_dir,
             language=language,
-            processing_level=processing_level,
+            processing_level=effective_parse_level,
             skip_tests=skip_tests,
             diff_manifest=diff_manifest,
         )
@@ -210,12 +222,15 @@ def scan_repository(
     # ---------------------------------------------------------------
     # Step 2.5: LLM Reachability review (optional, opt-in)
     # ---------------------------------------------------------------
-    # Runs after parse + app-context and before enhance/analyze. Signals are
-    # advisory and PROMOTE-ONLY: they may flag additional entry points or
-    # external-input sites the structural pass missed, but never demote a
-    # unit that structural analysis already kept. Threading app_context into
-    # the LLM prompt helps the model reason about expected entry points
-    # (e.g. "this is a web_app, look for HTTP handlers").
+    # Runs after parse + app-context and before enhance/analyze. Because parse
+    # was done with processing_level="all" (when filtering is requested), the
+    # LLM sees every unit in the codebase and can identify entry points the
+    # structural heuristics would miss.  After signals are applied the
+    # structural reachability filter is re-run with LLM-promoted entry points
+    # added as extra BFS seeds, so the final dataset honours the user's
+    # requested processing_level.  Threading app_context into the prompt helps
+    # the model reason about expected entry points (e.g. "this is a web_app,
+    # look for HTTP handlers").
     if llm_reachability:
         from core.llm_reachability import (
             analyze_reachability,
@@ -253,11 +268,6 @@ def scan_repository(
                 )
                 summary = apply_signals(dataset, signals)
 
-                # Persist mutated dataset (so downstream stages see the
-                # promoted entry points and the per-unit signals).
-                with open(active_dataset_path, "w", encoding="utf-8") as f:
-                    json.dump(dataset, f, indent=2)
-
                 signals_path = os.path.join(output_dir, "llm_reachability.json")
                 with open(signals_path, "w", encoding="utf-8") as f:
                     json.dump(
@@ -266,11 +276,37 @@ def scan_repository(
                         indent=2,
                     )
 
+                pre_filter_count = len(dataset.get("units", []))
+
+                # Re-apply the structural reachability filter using
+                # LLM-promoted entry points as additional BFS seeds.
+                if processing_level != "all":
+                    from core.parser_adapter import apply_reachability_filter
+                    llm_promoted_ids = {
+                        u["id"] for u in dataset.get("units", [])
+                        if u.get("is_entry_point") and u.get("id")
+                    }
+                    dataset = apply_reachability_filter(
+                        dataset,
+                        output_dir,
+                        processing_level,
+                        extra_entry_points=llm_promoted_ids,
+                    )
+                    result.units_count = len(dataset.get("units", []))
+
+                # Persist final dataset so downstream stages see promoted
+                # entry points, per-unit signals, and the applied filter.
+                with open(active_dataset_path, "w", encoding="utf-8") as f:
+                    json.dump(dataset, f, indent=2)
+
+                post_filter_count = len(dataset.get("units", []))
+
                 ctx.summary = {
-                    "units_reviewed": len(dataset.get("units", [])),
+                    "units_reviewed": pre_filter_count,
                     "signals_added": summary["signals_applied"],
                     "entry_points_promoted": summary["entry_points_promoted"],
                     "units_touched": summary["units_touched"],
+                    "post_filter_units": post_filter_count,
                 }
                 ctx.outputs = {"signals_path": signals_path}
 
@@ -279,6 +315,11 @@ def scan_repository(
                     f"{summary['entry_points_promoted']} new entry points",
                     file=sys.stderr,
                 )
+                if processing_level != "all":
+                    print(
+                        f"  After reachability filter: {post_filter_count} units",
+                        file=sys.stderr,
+                    )
 
         collected_step_reports.append(
             _load_step_report(output_dir, "llm-reachability")
