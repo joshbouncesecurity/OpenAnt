@@ -232,6 +232,7 @@ class TypeScriptAnalyzer {
       // In NestJS/Angular, constructor parameters with type annotations
       // declare injected services: constructor(private callService: CallService)
       const constructors = classDecl.getConstructors();
+      // DI classes have a single primary constructor; overloads are unusual in NestJS/Angular.
       if (constructors.length > 0) {
         const ctor = constructors[0];
         const injections = {};  // paramName -> typeName
@@ -240,8 +241,9 @@ class TypeScriptAnalyzer {
           const paramName = param.getName();
           const typeNode = param.getTypeNode();
           if (typeNode) {
-            const typeName = typeNode.getText();
-            // Only store simple PascalCase type names (skip union types, generics, primitives)
+            // Strip generic parameters so Repository<User> resolves as Repository
+            const typeName = typeNode.getText().replace(/<.*$/, '');
+            // Only store simple PascalCase type names (skip union types, primitives)
             if (/^[A-Z][a-zA-Z0-9_$]*$/.test(typeName)) {
               injections[paramName] = typeName;
             }

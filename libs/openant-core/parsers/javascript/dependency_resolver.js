@@ -279,11 +279,16 @@ class DependencyResolver {
 
           // 2b. Implementation class match: type is often an interface/abstract class
           //     and the implementation has a suffix (e.g., CallService -> CallServiceV1, CallServiceImpl)
+          //     Collect all prefix matches; if more than one, skip to avoid non-deterministic resolution.
+          const prefixMatches = [];
           for (const funcId of candidates) {
             const funcData = this.functions[funcId];
             if (funcData && funcData.className && funcData.className.startsWith(typeName)) {
-              return funcId;
+              prefixMatches.push(funcId);
             }
+          }
+          if (prefixMatches.length === 1) {
+            return prefixMatches[0];
           }
         }
       }

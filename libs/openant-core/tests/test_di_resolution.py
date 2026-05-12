@@ -272,6 +272,48 @@ class TestDIAwareCallResolution:
             "CallService.remove" in c for c in delete_calls
         ), f"Expected CallService.remove in calls, got: {delete_calls}"
 
+    def test_ambiguous_prefix_skips_resolution(self, tmp_path):
+        """When multiple classes share a type-name prefix, resolution is skipped."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "resolver.ts").write_text("""\
+export class MyResolver {
+    constructor(private callService: CallService) {}
+    getCall(id: string) {
+        return this.callService.getById(id);
+    }
+}
+""")
+        (src / "call_service.ts").write_text("""\
+export class CallServiceV1 {
+    getById(id: string) { return 'v1'; }
+}
+""")
+        (src / "call_service_mock.ts").write_text("""\
+export class CallServiceMock {
+    getById(id: string) { return 'mock'; }
+}
+""")
+        data = analyze_and_resolve(tmp_path, [
+            "src/resolver.ts",
+            "src/call_service.ts",
+            "src/call_service_mock.ts",
+        ])
+
+        call_graph = data["callGraph"]
+        resolver_calls = None
+        for fid, calls in call_graph.items():
+            if "MyResolver.getCall" in fid:
+                resolver_calls = calls
+                break
+
+        # Two classes match the CallService prefix — should not resolve to either
+        assert resolver_calls is not None
+        assert not any(
+            "CallServiceV1.getById" in c or "CallServiceMock.getById" in c
+            for c in resolver_calls
+        ), f"Should not resolve ambiguous prefix match, got: {resolver_calls}"
+
     def test_no_false_positives_without_di(self, tmp_path):
         """Methods without constructor deps should not spuriously resolve."""
         src = tmp_path / "src"
