@@ -284,24 +284,31 @@ class TypeScriptAnalyzer {
   /**
    * Heuristic: does `receiver` look like an Express app / router?
    *
-   * We accept identifiers whose name contains `app`, `router`, `routes`, or
-   * `server` (case-insensitive), and chained calls like `app.route(...)` or
-   * `router.route(...)`. We deliberately reject other receivers so generic
-   * `.get(...)` calls on caches / clients / query-builders aren't misread
-   * as routes.
+   * We accept identifiers whose name ends with or contains one of the common
+   * Express app/router stems (case-insensitive), and chained calls like
+   * `app.route(...)` or `router.route(...)`. We deliberately reject other
+   * receivers so generic `.get(...)` calls on caches / clients / query-builders
+   * aren't misread as routes.
+   *
+   * Accepted stems: app, router, routes, server, web, api, endpoints, controller.
+   * Codebases using single-word identifiers outside this list (e.g. `http`) will
+   * not be extracted; add the stem here if needed.
    */
+  // Stems that strongly suggest an Express app/router object.
+  static EXPRESS_RECEIVER_STEMS =
+    "app|router|routes|server|web|api|endpoints|controller";
+
   _isPlausibleExpressReceiver(receiver) {
     if (!receiver) return false;
     const kind = receiver.getKindName();
+    const stems = TypeScriptAnalyzer.EXPRESS_RECEIVER_STEMS;
 
     if (kind === "Identifier") {
       const name = receiver.getText().toLowerCase();
-      return /(^|_)(app|router|routes|server)(\d|$|_)/.test(name)
-        || /app$|router$|routes$|server$/.test(name)
-        || name === "app"
-        || name === "router"
-        || name === "routes"
-        || name === "server";
+      // Accept exact stems, suffix matches (myApp), and underscore-prefixed
+      // variants (app_server) while rejecting generic short names.
+      return new RegExp(`(^|_)(${stems})(\\d|$|_)`).test(name)
+        || new RegExp(`(${stems})$`).test(name);
     }
     if (kind === "CallExpression") {
       // e.g. app.route('/x').get(...) — receiver is the .route() call
@@ -318,7 +325,7 @@ class TypeScriptAnalyzer {
       const trailing = receiver.getName && receiver.getName();
       if (!trailing) return false;
       const lower = trailing.toLowerCase();
-      return ["app", "router", "routes", "server"].some((s) => lower.endsWith(s));
+      return new RegExp(`(${stems})$`).test(lower);
     }
     return false;
   }
@@ -396,7 +403,11 @@ class TypeScriptAnalyzer {
         if (k === "Identifier") {
           namedMiddleware.push(arg.getText());
         } else if (k === "PropertyAccessExpression") {
-          // e.g. middleware.auth — keep the trailing name
+          // Stores only the trailing name (e.g. "auth" from "middleware.auth").
+          // dependency_resolver._resolveCall looks up by simple name, so if
+          // another unrelated function shares the same name the edge may
+          // resolve to the wrong target (silent false-positive). This is a
+          // known limitation of the current simple-name resolution model.
           const name = arg.getName ? arg.getName() : arg.getText();
           namedMiddleware.push(name);
         }
