@@ -97,6 +97,39 @@ export class CallServiceV2 {
 }
 """
 
+# Interface + implementing class for nominal type tests
+ICALL_SERVICE_TS = """\
+export interface ICallService {
+    getById(id: string): Promise<any>;
+}
+"""
+
+IMPL_CALL_SERVICE_TS = """\
+import { Injectable } from '@nestjs/common';
+import { ICallService } from './icall.service';
+
+@Injectable()
+export class CallServiceImpl implements ICallService {
+    async getById(id: string) {
+        return { id };
+    }
+}
+"""
+
+NOMINAL_RESOLVER_TS = """\
+import { Injectable } from '@nestjs/common';
+import { ICallService } from './icall.service';
+
+@Injectable()
+export class CallResolver {
+    constructor(private callService: ICallService) {}
+
+    async getCall(id: string) {
+        return this.callService.getById(id);
+    }
+}
+"""
+
 
 @pytest.fixture
 def nestjs_repo(tmp_path):
@@ -116,6 +149,17 @@ def nestjs_repo_versioned(tmp_path):
     src.mkdir()
     (src / "call.resolver.ts").write_text(RESOLVER_TS)
     (src / "call.service.ts").write_text(VERSIONED_SERVICE_TS)
+    return tmp_path
+
+
+@pytest.fixture
+def nestjs_repo_nominal(tmp_path):
+    """Create a repo where injection is via interface and impl uses implements."""
+    src = tmp_path / "src"
+    src.mkdir()
+    (src / "icall.service.ts").write_text(ICALL_SERVICE_TS)
+    (src / "call.service.impl.ts").write_text(IMPL_CALL_SERVICE_TS)
+    (src / "call.resolver.ts").write_text(NOMINAL_RESOLVER_TS)
     return tmp_path
 
 
@@ -142,7 +186,7 @@ def analyze_and_resolve(repo_path, files):
 
 
 class TestConstructorDepsExtraction:
-    """Test that the analyzer extracts constructorDeps from class constructors."""
+    """Test that the analyzer extracts constructorDeps into the classes table."""
 
     def test_extracts_constructor_deps(self, nestjs_repo):
         analyzer_out = nestjs_repo / "analyzer_output.json"
@@ -154,21 +198,17 @@ class TestConstructorDepsExtraction:
         assert result.returncode == 0
 
         data = json.loads(analyzer_out.read_text())
-        functions = data["functions"]
+        classes = data["classes"]
 
-        # Find a CallResolver method
-        resolver_methods = {
-            fid: f for fid, f in functions.items()
-            if "CallResolver" in fid
-        }
-        assert len(resolver_methods) > 0, "No CallResolver methods found"
+        assert "CallResolver" in classes, "CallResolver not in classes table"
+        deps = classes["CallResolver"].get("constructorDeps", {})
+        assert deps.get("callService") == "CallService"
+        assert deps.get("authService") == "AuthService"
 
-        # Each method should have constructorDeps
-        for fid, func in resolver_methods.items():
-            assert "constructorDeps" in func, f"{fid} missing constructorDeps"
-            deps = func["constructorDeps"]
-            assert deps.get("callService") == "CallService"
-            assert deps.get("authService") == "AuthService"
+        # Methods themselves should NOT carry constructorDeps (stored in classes table instead)
+        for fid, func in data["functions"].items():
+            if "CallResolver" in fid:
+                assert "constructorDeps" not in func, f"{fid} should not have constructorDeps"
 
     def test_skips_primitive_types(self, tmp_path):
         """Constructor params with primitive types should not be included."""
@@ -196,16 +236,132 @@ export class Example {
         assert result.returncode == 0
 
         data = json.loads(analyzer_out.read_text())
-        func = next(
-            f for f in data["functions"].values()
-            if f.get("className") == "Example"
-        )
-        deps = func.get("constructorDeps", {})
+        deps = data["classes"].get("Example", {}).get("constructorDeps", {})
         # Only MyService should be captured (PascalCase), not string/number
         assert "service" in deps
         assert deps["service"] == "MyService"
         assert "name" not in deps
         assert "count" not in deps
+
+
+class TestBaseTypesExtraction:
+    """Test that the analyzer extracts implements/extends into baseTypes."""
+
+    def test_extracts_implements(self, nestjs_repo_nominal):
+        analyzer_out = nestjs_repo_nominal / "analyzer_output.json"
+        result = run_node(
+            "typescript_analyzer.js", str(nestjs_repo_nominal),
+            "src/call.service.impl.ts",
+            "--output", str(analyzer_out),
+        )
+        assert result.returncode == 0
+
+        data = json.loads(analyzer_out.read_text())
+        base_types = data["classes"].get("CallServiceImpl", {}).get("baseTypes", [])
+        assert "ICallService" in base_types
+
+    def test_generic_implements_stripped(self, tmp_path):
+        """implements Repository<User> should store as Repository."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "impl.ts").write_text("""\
+export class UserRepo implements Repository<User> {
+    findOne(id: string) { return null; }
+}
+""")
+        analyzer_out = tmp_path / "analyzer_output.json"
+        result = run_node(
+            "typescript_analyzer.js", str(tmp_path),
+            "src/impl.ts",
+            "--output", str(analyzer_out),
+        )
+        assert result.returncode == 0
+
+        data = json.loads(analyzer_out.read_text())
+        base_types = data["classes"].get("UserRepo", {}).get("baseTypes", [])
+        assert "Repository" in base_types
+        assert not any("<" in t for t in base_types)
+
+    def test_extracts_extends(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "impl.ts").write_text("""\
+export class ConcreteService extends BaseService {
+    run() { return true; }
+}
+""")
+        analyzer_out = tmp_path / "analyzer_output.json"
+        result = run_node(
+            "typescript_analyzer.js", str(tmp_path),
+            "src/impl.ts",
+            "--output", str(analyzer_out),
+        )
+        assert result.returncode == 0
+
+        data = json.loads(analyzer_out.read_text())
+        base_types = data["classes"].get("ConcreteService", {}).get("baseTypes", [])
+        assert "BaseService" in base_types
+
+
+class TestNominalTypeResolution:
+    """Test that implements/extends clauses are used for DI resolution."""
+
+    def test_resolves_via_implements(self, nestjs_repo_nominal):
+        """this.callService.getById() resolves to CallServiceImpl.getById via implements."""
+        data = analyze_and_resolve(nestjs_repo_nominal, [
+            "src/call.resolver.ts",
+            "src/call.service.impl.ts",
+        ])
+
+        call_graph = data["callGraph"]
+        resolver_calls = None
+        for fid, calls in call_graph.items():
+            if "CallResolver.getCall" in fid:
+                resolver_calls = calls
+                break
+
+        assert resolver_calls is not None, "CallResolver.getCall not in call graph"
+        assert any(
+            "CallServiceImpl.getById" in c for c in resolver_calls
+        ), f"Expected CallServiceImpl.getById via implements, got: {resolver_calls}"
+
+    def test_nominal_ambiguity_skips_resolution(self, tmp_path):
+        """Two classes implementing same interface → no resolution (ambiguous)."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "resolver.ts").write_text("""\
+export class MyResolver {
+    constructor(private svc: IMyService) {}
+    work() { return this.svc.run(); }
+}
+""")
+        (src / "impl_a.ts").write_text("""\
+export class ImplA implements IMyService {
+    run() { return 'a'; }
+}
+""")
+        (src / "impl_b.ts").write_text("""\
+export class ImplB implements IMyService {
+    run() { return 'b'; }
+}
+""")
+        data = analyze_and_resolve(tmp_path, [
+            "src/resolver.ts",
+            "src/impl_a.ts",
+            "src/impl_b.ts",
+        ])
+
+        call_graph = data["callGraph"]
+        resolver_calls = None
+        for fid, calls in call_graph.items():
+            if "MyResolver.work" in fid:
+                resolver_calls = calls
+                break
+
+        assert resolver_calls is not None
+        assert not any(
+            "ImplA.run" in c or "ImplB.run" in c for c in resolver_calls
+        ), f"Should not resolve ambiguous implements, got: {resolver_calls}"
 
 
 class TestDIAwareCallResolution:

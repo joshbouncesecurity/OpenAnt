@@ -20,6 +20,7 @@ const path = require('path');
 class DependencyResolver {
   constructor(analyzerOutput, options = {}) {
     this.functions = analyzerOutput.functions || {};
+    this.classes = analyzerOutput.classes || {};  // className -> { constructorDeps, baseTypes }
     this.callGraph = {};  // functionId -> [calledFunctionIds]
     this.reverseCallGraph = {};  // functionId -> [callerFunctionIds]
     this.maxDepth = options.maxDepth || 3;
@@ -29,6 +30,7 @@ class DependencyResolver {
     this.functionsByName = Object.create(null);  // simpleName -> [functionIds]
     this.functionsByFile = Object.create(null);  // filePath -> [functionIds]
     this.imports = Object.create(null);  // filePath -> { importedName -> { source, originalName } }
+    this.classesByBaseType = Object.create(null);  // baseTypeName -> [classNames]
 
     this._buildIndexes();
   }
@@ -51,6 +53,13 @@ class DependencyResolver {
         this.functionsByFile[filePath] = [];
       }
       this.functionsByFile[filePath].push(funcId);
+    }
+
+    for (const [className, classData] of Object.entries(this.classes)) {
+      for (const baseType of (classData.baseTypes || [])) {
+        if (!this.classesByBaseType[baseType]) this.classesByBaseType[baseType] = [];
+        this.classesByBaseType[baseType].push(className);
+      }
     }
   }
 
@@ -266,8 +275,9 @@ class DependencyResolver {
     //    -> resolve to CallService.getById
     if (callerFuncId) {
       const callerFunc = this.functions[callerFuncId];
-      if (callerFunc && callerFunc.constructorDeps) {
-        const typeName = callerFunc.constructorDeps[objectName];
+      const classEntry = callerFunc && this.classes[callerFunc.className];
+      if (classEntry && classEntry.constructorDeps) {
+        const typeName = classEntry.constructorDeps[objectName];
         if (typeName) {
           // 2a. Exact type match
           for (const funcId of candidates) {
@@ -277,19 +287,22 @@ class DependencyResolver {
             }
           }
 
-          // 2b. Implementation class match: type is often an interface/abstract class
-          //     and the implementation has a suffix (e.g., CallService -> CallServiceV1, CallServiceImpl)
-          //     Collect all prefix matches; if more than one, skip to avoid non-deterministic resolution.
-          const prefixMatches = [];
-          for (const funcId of candidates) {
+          // 2b. Nominal type match: prefer candidates whose class implements or extends typeName.
+          //     If exactly one such candidate exists, the resolution is unambiguous.
+          const nominalClassNames = this.classesByBaseType[typeName] || [];
+          const nominalMatches = candidates.filter(funcId => {
             const funcData = this.functions[funcId];
-            if (funcData && funcData.className && funcData.className.startsWith(typeName)) {
-              prefixMatches.push(funcId);
-            }
-          }
-          if (prefixMatches.length === 1) {
-            return prefixMatches[0];
-          }
+            return funcData && nominalClassNames.includes(funcData.className);
+          });
+          if (nominalMatches.length === 1) return nominalMatches[0];
+
+          // 2c. Prefix match: last resort for versioned names (e.g., CallService -> CallServiceV1).
+          //     Skip if multiple candidates match to preserve no-false-positive property.
+          const prefixMatches = candidates.filter(funcId => {
+            const funcData = this.functions[funcId];
+            return funcData && funcData.className && funcData.className.startsWith(typeName);
+          });
+          if (prefixMatches.length === 1) return prefixMatches[0];
         }
       }
     }

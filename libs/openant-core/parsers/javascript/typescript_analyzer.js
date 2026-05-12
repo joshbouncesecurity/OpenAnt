@@ -55,6 +55,7 @@ class TypeScriptAnalyzer {
       compilerOptions: PERMISSIVE_COMPILER_OPTIONS,
     });
     this.functions = {}; // functionId -> function metadata
+    this.classes = {};   // className -> { constructorDeps, baseTypes }
     this.callGraph = {}; // callerId -> array of call info
   }
 
@@ -155,6 +156,7 @@ class TypeScriptAnalyzer {
 
     return {
       functions: this.functions,
+      classes: this.classes,
       callGraph: this.callGraph,
     };
   }
@@ -228,11 +230,26 @@ class TypeScriptAnalyzer {
         };
       }
 
-      // Extract constructor DI metadata for this class
-      // In NestJS/Angular, constructor parameters with type annotations
-      // declare injected services: constructor(private callService: CallService)
-      const constructors = classDecl.getConstructors();
+      // Build class-level metadata: constructorDeps and baseTypes
+      const classEntry = {};
+
+      // Extract base types (implements + extends) for nominal DI resolution.
+      // Strips generics: implements Repository<User> -> Repository
+      const baseTypes = [];
+      const extendsExpr = classDecl.getExtends();
+      if (extendsExpr) {
+        const name = extendsExpr.getExpression().getText().replace(/<.*$/, '');
+        if (/^[A-Z][a-zA-Z0-9_$]*$/.test(name)) baseTypes.push(name);
+      }
+      for (const impl of classDecl.getImplements()) {
+        const name = impl.getExpression().getText().replace(/<.*$/, '');
+        if (/^[A-Z][a-zA-Z0-9_$]*$/.test(name)) baseTypes.push(name);
+      }
+      if (baseTypes.length > 0) classEntry.baseTypes = baseTypes;
+
+      // Extract constructor DI metadata.
       // DI classes have a single primary constructor; overloads are unusual in NestJS/Angular.
+      const constructors = classDecl.getConstructors();
       if (constructors.length > 0) {
         const ctor = constructors[0];
         const injections = {};  // paramName -> typeName
@@ -250,16 +267,11 @@ class TypeScriptAnalyzer {
           }
         }
 
-        if (Object.keys(injections).length > 0) {
-          // Store DI metadata on each method of this class
-          for (const method of classDecl.getMethods()) {
-            const methodName = method.getName();
-            const functionId = `${relativePath}:${className}.${methodName}`;
-            if (this.functions[functionId]) {
-              this.functions[functionId].constructorDeps = injections;
-            }
-          }
-        }
+        if (Object.keys(injections).length > 0) classEntry.constructorDeps = injections;
+      }
+
+      if (Object.keys(classEntry).length > 0) {
+        this.classes[className] = classEntry;
       }
     }
 
