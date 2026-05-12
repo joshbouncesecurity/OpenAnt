@@ -184,6 +184,11 @@ class CPipelineTest:
             analyzer_output = generator.generate_analyzer_output()
             write_json(self.analyzer_output_file, analyzer_output)
 
+            # Write call graph for post-LLM reachability re-filtering
+            call_graph_file = os.path.join(self.output_dir, 'call_graph.json')
+            with open(call_graph_file, 'w') as f:
+                json.dump(graph_result, f, indent=2)
+
             elapsed = (datetime.now() - start_time).total_seconds()
 
             summary = {
