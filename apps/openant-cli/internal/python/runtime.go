@@ -2,6 +2,8 @@
 package python
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -198,6 +200,16 @@ func CheckOpenantInstalled(pythonPath string) error {
 		)
 	}
 
+	// Save dependency hash so CheckDepsStale knows this is the baseline.
+	pyprojectPath := filepath.Join(corePath, "pyproject.toml")
+	if h, err := hashFile(pyprojectPath); err == nil {
+		if err := writeStoredHash(h); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: could not save dependency hash at %s: %v (next run may reinstall)\n",
+				depsHashPath(), err)
+		}
+	}
+
 	fmt.Fprintln(os.Stderr, "openant installed successfully.")
 	return nil
 }
@@ -220,11 +232,123 @@ func EnsureRuntime() (*RuntimeInfo, error) {
 	vp := venvPython()
 	if rt.Path != vp && fileExists(vp) && isOpenantImportable(vp) {
 		if info, err := checkPython(vp); err == nil {
-			return info, nil
+			rt = info
 		}
 	}
 
+	// Check if dependencies have changed since last install.
+	if err := CheckDepsStale(rt.Path); err != nil {
+		return nil, err
+	}
+
 	return rt, nil
+}
+
+// depsHashPath returns the path to the stored dependency hash inside the venv.
+func depsHashPath() string {
+	return filepath.Join(venvDir(), ".deps-hash")
+}
+
+// hashFile returns the hex-encoded SHA-256 of a file's contents.
+func hashFile(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:]), nil
+}
+
+// readHashAt reads a stored hash from the given path, or "" if absent.
+func readHashAt(path string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(data))
+}
+
+// writeHashAt saves a hash to the given path, creating the parent directory
+// if it does not already exist.
+func writeHashAt(path, hash string) error {
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, []byte(hash+"\n"), 0644)
+}
+
+// readStoredHash reads the previously stored dependency hash, or "" if absent.
+func readStoredHash() string { return readHashAt(depsHashPath()) }
+
+// writeStoredHash saves the dependency hash to the venv marker file.
+func writeStoredHash(hash string) error { return writeHashAt(depsHashPath(), hash) }
+
+// depsStalenessAt inspects pyproject.toml at corePath and the hash stored at
+// hashPath, and reports whether a reinstall is needed. The boolean is true
+// when deps are stale (i.e. the hash differs and a reinstall is warranted).
+// The caller is expected to skip the check on any error.
+func depsStalenessAt(corePath, hashPath string) (stale bool, currentHash string, err error) {
+	pyprojectPath := filepath.Join(corePath, "pyproject.toml")
+	currentHash, err = hashFile(pyprojectPath)
+	if err != nil {
+		return false, "", err
+	}
+	return currentHash != readHashAt(hashPath), currentHash, nil
+}
+
+// depsStaleness is the production wrapper around depsStalenessAt that uses
+// the real venv hash path.
+func depsStaleness(corePath string) (stale bool, currentHash string, err error) {
+	return depsStalenessAt(corePath, depsHashPath())
+}
+
+// CheckDepsStale checks if pyproject.toml has changed since the last install.
+// If stale, it re-runs pip install -e and updates the stored hash.
+// Returns nil if deps are up-to-date or were successfully refreshed.
+func CheckDepsStale(pythonPath string) error {
+	return checkDepsStaleWith(pythonPath, findOpenantCore)
+}
+
+// checkDepsStaleWith is the testable core of CheckDepsStale; coreFinder is
+// injected so tests can avoid os.Chdir to simulate a missing source tree.
+func checkDepsStaleWith(pythonPath string, coreFinder func() (string, error)) error {
+	corePath, err := coreFinder()
+	if err != nil {
+		// Can't find source — skip staleness check
+		return nil
+	}
+
+	stale, currentHash, err := depsStaleness(corePath)
+	if err != nil {
+		// Can't read pyproject.toml — skip check
+		return nil
+	}
+	if !stale {
+		return nil // deps are up-to-date
+	}
+
+	fmt.Fprintln(os.Stderr, "Dependencies changed, updating openant installation...")
+	// Known limitation: concurrent invocations that both detect stale deps
+	// will race to pip-install into the same venv. pip does not support
+	// concurrent writes; an OS-level lock would be needed to close this gap.
+	if err := installOpenant(pythonPath, corePath); err != nil {
+		return fmt.Errorf(
+			"failed to update openant dependencies: %w\n"+
+				"Try manually: %s -m pip install -e %s",
+			err, pythonPath, corePath,
+		)
+	}
+
+	// Store the new hash
+	if err := writeStoredHash(currentHash); err != nil {
+		// Non-fatal — install succeeded, just can't cache the hash
+		fmt.Fprintf(os.Stderr, "Warning: could not save dependency hash: %v\n", err)
+	}
+
+	fmt.Fprintln(os.Stderr, "Dependencies updated successfully.")
+	return nil
 }
 
 // createVenv creates a new venv at ~/.openant/venv/ using the given Python.
