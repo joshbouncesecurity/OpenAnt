@@ -9,17 +9,22 @@ Each parser is invoked as a subprocess to avoid import conflicts with
 sys.path hacks in the original code.
 """
 
+import contextlib
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 from core.schemas import ParseResult
-from utilities.file_io import read_json, write_json
+from utilities.file_io import open_utf8, read_json, write_json
 
 # Root of openant-core (where parsers/ lives)
 _CORE_ROOT = Path(__file__).parent.parent
+
+# JS parser directory (holds its own package.json / node_modules)
+_JS_PARSER_DIR = _CORE_ROOT / "parsers" / "javascript"
 
 
 def detect_language(repo_path: str) -> str:
@@ -364,12 +369,114 @@ def _parse_python(repo_path: str, output_dir: str, processing_level: str, skip_t
 # JavaScript/TypeScript parser
 # ---------------------------------------------------------------------------
 
+def _js_deps_installed() -> bool:
+    """Return True only if a *complete* npm install has previously succeeded.
+
+    Checking that ``node_modules/`` exists is not enough: a prior install that
+    was killed (Ctrl+C, OOM, disk full) leaves a partial directory. npm writes
+    ``node_modules/.package-lock.json`` at the *end* of a successful install,
+    so we use that as the completion sentinel.
+    """
+    return (_JS_PARSER_DIR / "node_modules" / ".package-lock.json").is_file()
+
+
+def _ensure_js_parser_dependencies() -> None:
+    """Install the JS parser's Node dependencies on first use.
+
+    Mirrors the Go CLI's venv bootstrap (apps/openant-cli/internal/python/runtime.go):
+    the first invocation installs, subsequent invocations are a no-op. Runs only
+    when a JS repo is actually being parsed, so Python/Go-only users never need npm.
+
+    Concurrency: uses a lockfile so two parallel parses don't both run
+    ``npm install`` in the same directory (which can corrupt node_modules).
+    """
+    if _js_deps_installed():
+        return
+
+    if not (_JS_PARSER_DIR / "package.json").is_file():
+        raise RuntimeError(
+            f"JS parser package.json not found at {_JS_PARSER_DIR / 'package.json'}. "
+            "The openant-core install may be incomplete."
+        )
+
+    npm = shutil.which("npm")
+    if npm is None:
+        raise RuntimeError(
+            "JavaScript parser dependencies are not installed and `npm` is not on PATH. "
+            f"Install Node.js/npm, then run: npm install (from {_JS_PARSER_DIR})"
+        )
+
+    # Serialize concurrent bootstraps. The lockfile lives next to package.json so
+    # it's always on the same filesystem as the install target.
+    lock_path = _JS_PARSER_DIR / ".openant-npm-install.lock"
+    with _file_lock(lock_path):
+        # Re-check under the lock: another process may have finished while we waited.
+        if _js_deps_installed():
+            return
+
+        print(
+            "[Parser] Installing JS parser dependencies (first run, this may take a minute)...",
+            file=sys.stderr,
+        )
+        result = subprocess.run(
+            [npm, "install"],
+            cwd=str(_JS_PARSER_DIR),
+            stdout=sys.stderr,
+            stderr=sys.stderr,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"`npm install` failed in {_JS_PARSER_DIR} with exit code "
+                f"{result.returncode}. See npm output above for details; you can "
+                f"reproduce with: npm install (from {_JS_PARSER_DIR})"
+            )
+
+
+@contextlib.contextmanager
+def _file_lock(lock_path: Path):
+    """Cross-platform exclusive file lock as a context manager.
+
+    Uses ``msvcrt`` on Windows and ``fcntl`` elsewhere. Blocks until the lock is
+    acquired, releases on exit. The lockfile itself is left in place; only the
+    OS-level lock matters for mutual exclusion.
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    # "w" (not "a+") so the file pointer is at byte 0 — msvcrt.locking locks a
+    # range starting at the *current* file position, so different positions
+    # would mean non-overlapping (i.e. non-exclusive) locks.
+    f = open_utf8(lock_path, "w")
+    try:
+        if os.name == "nt":
+            import msvcrt
+
+            f.seek(0)
+            # LK_LOCK blocks (with retries) until the byte range is exclusive.
+            msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                f.seek(0)
+                msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(f.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(f.fileno(), fcntl.LOCK_UN)
+    finally:
+        f.close()
+
+
 def _parse_javascript(repo_path: str, output_dir: str, processing_level: str, skip_tests: bool = True, name: str = None) -> ParseResult:
     """Invoke the JavaScript/TypeScript parser.
 
     The JS parser is a PipelineTest class that runs Node.js subprocesses.
     We invoke it via subprocess to avoid the sys.path hacks.
     """
+    _ensure_js_parser_dependencies()
+
     print("[Parser] Running JavaScript parser...", file=sys.stderr)
 
     parser_script = _CORE_ROOT / "parsers" / "javascript" / "test_pipeline.py"
