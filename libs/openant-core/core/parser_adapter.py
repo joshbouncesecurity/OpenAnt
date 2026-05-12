@@ -18,7 +18,7 @@ import sys
 from pathlib import Path
 
 from core.schemas import ParseResult
-from utilities.file_io import read_json, write_json
+from utilities.file_io import open_utf8, read_json, write_json
 
 # Root of openant-core (where parsers/ lives)
 _CORE_ROOT = Path(__file__).parent.parent
@@ -444,7 +444,7 @@ def _file_lock(lock_path: Path):
     # "w" (not "a+") so the file pointer is at byte 0 — msvcrt.locking locks a
     # range starting at the *current* file position, so different positions
     # would mean non-overlapping (i.e. non-exclusive) locks.
-    f = open(lock_path, "w")
+    f = open_utf8(lock_path, "w")
     try:
         if os.name == "nt":
             import msvcrt
