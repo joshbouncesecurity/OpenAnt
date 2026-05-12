@@ -20,7 +20,7 @@ const path = require('path');
 class DependencyResolver {
   constructor(analyzerOutput, options = {}) {
     this.functions = analyzerOutput.functions || {};
-    this.classes = analyzerOutput.classes || {};  // className -> { constructorDeps, baseTypes }
+    this.classes = analyzerOutput.classes || {};  // "filePath:className" -> { constructorDeps, baseTypes }
     this.callGraph = {};  // functionId -> [calledFunctionIds]
     this.reverseCallGraph = {};  // functionId -> [callerFunctionIds]
     this.maxDepth = options.maxDepth || 3;
@@ -30,7 +30,7 @@ class DependencyResolver {
     this.functionsByName = Object.create(null);  // simpleName -> [functionIds]
     this.functionsByFile = Object.create(null);  // filePath -> [functionIds]
     this.imports = Object.create(null);  // filePath -> { importedName -> { source, originalName } }
-    this.classesByBaseType = Object.create(null);  // baseTypeName -> [classNames]
+    this.classesByBaseType = Object.create(null);  // baseTypeName -> ["filePath:className", ...]
 
     this._buildIndexes();
   }
@@ -55,10 +55,10 @@ class DependencyResolver {
       this.functionsByFile[filePath].push(funcId);
     }
 
-    for (const [className, classData] of Object.entries(this.classes)) {
+    for (const [classKey, classData] of Object.entries(this.classes)) {
       for (const baseType of (classData.baseTypes || [])) {
         if (!this.classesByBaseType[baseType]) this.classesByBaseType[baseType] = [];
-        this.classesByBaseType[baseType].push(className);
+        this.classesByBaseType[baseType].push(classKey);
       }
     }
   }
@@ -275,7 +275,8 @@ class DependencyResolver {
     //    -> resolve to CallService.getById
     if (callerFuncId) {
       const callerFunc = this.functions[callerFuncId];
-      const classEntry = callerFunc && this.classes[callerFunc.className];
+      const classEntry = callerFunc && callerFunc.className &&
+          this.classes[callerFile + ':' + callerFunc.className];
       if (classEntry && classEntry.constructorDeps) {
         const typeName = classEntry.constructorDeps[objectName];
         if (typeName) {
@@ -289,10 +290,12 @@ class DependencyResolver {
 
           // 2b. Nominal type match: prefer candidates whose class implements or extends typeName.
           //     If exactly one such candidate exists, the resolution is unambiguous.
-          const nominalClassNames = this.classesByBaseType[typeName] || [];
+          const nominalClassKeys = this.classesByBaseType[typeName] || [];
           const nominalMatches = candidates.filter(funcId => {
             const funcData = this.functions[funcId];
-            return funcData && nominalClassNames.includes(funcData.className);
+            if (!funcData || !funcData.className) return false;
+            const funcClassKey = funcId.split(':')[0] + ':' + funcData.className;
+            return nominalClassKeys.includes(funcClassKey);
           });
           if (nominalMatches.length === 1) return nominalMatches[0];
 

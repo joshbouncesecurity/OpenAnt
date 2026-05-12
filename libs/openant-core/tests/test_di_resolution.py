@@ -163,6 +163,14 @@ def nestjs_repo_nominal(tmp_path):
     return tmp_path
 
 
+def find_class(classes, class_name):
+    """Find a class entry in the file-qualified classes dict (key is "filePath:ClassName")."""
+    for key, val in classes.items():
+        if key.endswith(':' + class_name):
+            return val
+    return None
+
+
 def analyze_and_resolve(repo_path, files):
     """Run analyzer + resolver on given files and return resolved data."""
     analyzer_out = repo_path / "analyzer_output.json"
@@ -200,8 +208,9 @@ class TestConstructorDepsExtraction:
         data = json.loads(analyzer_out.read_text())
         classes = data["classes"]
 
-        assert "CallResolver" in classes, "CallResolver not in classes table"
-        deps = classes["CallResolver"].get("constructorDeps", {})
+        call_resolver = find_class(classes, "CallResolver")
+        assert call_resolver is not None, "CallResolver not in classes table"
+        deps = call_resolver.get("constructorDeps", {})
         assert deps.get("callService") == "CallService"
         assert deps.get("authService") == "AuthService"
 
@@ -236,12 +245,83 @@ export class Example {
         assert result.returncode == 0
 
         data = json.loads(analyzer_out.read_text())
-        deps = data["classes"].get("Example", {}).get("constructorDeps", {})
+        deps = (find_class(data["classes"], "Example") or {}).get("constructorDeps", {})
         # Only MyService should be captured (PascalCase), not string/number
         assert "service" in deps
         assert deps["service"] == "MyService"
         assert "name" not in deps
         assert "count" not in deps
+
+
+    def test_same_name_different_file_no_collision(self, tmp_path):
+        """Two classes with the same name in different files must not collide.
+
+        Pre-fix: this.classes["UserController"] is last-write-wins, so the first
+        class's constructorDeps are silently overwritten and its DI calls miss.
+        Post-fix: both entries are keyed by "filePath:ClassName".
+        """
+        (tmp_path / "admin").mkdir()
+        (tmp_path / "v2").mkdir()
+        (tmp_path / "admin" / "user_controller.ts").write_text("""\
+export class UserController {
+    constructor(private fooService: FooService) {}
+    getFoo() { return this.fooService.get(); }
+}
+""")
+        (tmp_path / "v2" / "user_controller.ts").write_text("""\
+export class UserController {
+    constructor(private barService: BarService) {}
+    getBar() { return this.barService.get(); }
+}
+""")
+        (tmp_path / "foo_service.ts").write_text("""\
+export class FooService {
+    get() { return 'foo'; }
+}
+""")
+        (tmp_path / "bar_service.ts").write_text("""\
+export class BarService {
+    get() { return 'bar'; }
+}
+""")
+
+        # 1. Analyzer: both class entries present (no last-write-wins collision)
+        analyzer_out = tmp_path / "analyzer_output.json"
+        result = run_node(
+            "typescript_analyzer.js", str(tmp_path),
+            "admin/user_controller.ts",
+            "v2/user_controller.ts",
+            "--output", str(analyzer_out),
+        )
+        assert result.returncode == 0
+        data = json.loads(analyzer_out.read_text())
+        classes = data["classes"]
+
+        admin_entry = next((v for k, v in classes.items() if "admin" in k and k.endswith(":UserController")), None)
+        v2_entry = next((v for k, v in classes.items() if "v2" in k and k.endswith(":UserController")), None)
+        assert admin_entry is not None, "admin/UserController missing from classes table"
+        assert v2_entry is not None, "v2/UserController missing from classes table"
+        assert admin_entry.get("constructorDeps", {}).get("fooService") == "FooService"
+        assert v2_entry.get("constructorDeps", {}).get("barService") == "BarService"
+
+        # 2. Resolver: each class resolves calls to the right service (not the other's)
+        data = analyze_and_resolve(tmp_path, [
+            "admin/user_controller.ts",
+            "v2/user_controller.ts",
+            "foo_service.ts",
+            "bar_service.ts",
+        ])
+        call_graph = data["callGraph"]
+
+        admin_calls = next((calls for fid, calls in call_graph.items() if "admin" in fid and "UserController.getFoo" in fid), None)
+        v2_calls = next((calls for fid, calls in call_graph.items() if "v2" in fid and "UserController.getBar" in fid), None)
+
+        assert admin_calls is not None, "admin/UserController.getFoo not in call graph"
+        assert v2_calls is not None, "v2/UserController.getBar not in call graph"
+        assert any("FooService.get" in c for c in admin_calls), \
+            f"admin/UserController.getFoo should resolve to FooService.get, got: {admin_calls}"
+        assert any("BarService.get" in c for c in v2_calls), \
+            f"v2/UserController.getBar should resolve to BarService.get, got: {v2_calls}"
 
 
 class TestBaseTypesExtraction:
@@ -257,7 +337,7 @@ class TestBaseTypesExtraction:
         assert result.returncode == 0
 
         data = json.loads(analyzer_out.read_text())
-        base_types = data["classes"].get("CallServiceImpl", {}).get("baseTypes", [])
+        base_types = (find_class(data["classes"], "CallServiceImpl") or {}).get("baseTypes", [])
         assert "ICallService" in base_types
 
     def test_generic_implements_stripped(self, tmp_path):
@@ -278,7 +358,7 @@ export class UserRepo implements Repository<User> {
         assert result.returncode == 0
 
         data = json.loads(analyzer_out.read_text())
-        base_types = data["classes"].get("UserRepo", {}).get("baseTypes", [])
+        base_types = (find_class(data["classes"], "UserRepo") or {}).get("baseTypes", [])
         assert "Repository" in base_types
         assert not any("<" in t for t in base_types)
 
@@ -299,7 +379,7 @@ export class ConcreteService extends BaseService {
         assert result.returncode == 0
 
         data = json.loads(analyzer_out.read_text())
-        base_types = data["classes"].get("ConcreteService", {}).get("baseTypes", [])
+        base_types = (find_class(data["classes"], "ConcreteService") or {}).get("baseTypes", [])
         assert "BaseService" in base_types
 
 

@@ -55,7 +55,7 @@ class TypeScriptAnalyzer {
       compilerOptions: PERMISSIVE_COMPILER_OPTIONS,
     });
     this.functions = {}; // functionId -> function metadata
-    this.classes = {};   // className -> { constructorDeps, baseTypes }
+    this.classes = {};   // "filePath:className" -> { constructorDeps, baseTypes }
     this.callGraph = {}; // callerId -> array of call info
   }
 
@@ -271,7 +271,7 @@ class TypeScriptAnalyzer {
       }
 
       if (Object.keys(classEntry).length > 0) {
-        this.classes[className] = classEntry;
+        this.classes[`${relativePath}:${className}`] = classEntry;
       }
     }
 
