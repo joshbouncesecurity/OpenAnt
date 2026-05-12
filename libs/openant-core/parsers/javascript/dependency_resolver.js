@@ -20,7 +20,7 @@ const path = require('path');
 class DependencyResolver {
   constructor(analyzerOutput, options = {}) {
     this.functions = analyzerOutput.functions || {};
-    this.classes = analyzerOutput.classes || {};  // "filePath:className" -> { constructorDeps, baseTypes }
+    this.classes = analyzerOutput.classes || {};  // "filePath:className" -> { constructorDeps, fieldDeps, baseTypes }
     this.callGraph = {};  // functionId -> [calledFunctionIds]
     this.reverseCallGraph = {};  // functionId -> [callerFunctionIds]
     this.maxDepth = options.maxDepth || 3;
@@ -277,8 +277,9 @@ class DependencyResolver {
       const callerFunc = this.functions[callerFuncId];
       const classEntry = callerFunc && callerFunc.className &&
           this.classes[callerFile + ':' + callerFunc.className];
-      if (classEntry && classEntry.constructorDeps) {
-        const typeName = classEntry.constructorDeps[objectName];
+      if (classEntry && (classEntry.constructorDeps || classEntry.fieldDeps)) {
+        const typeName = (classEntry.constructorDeps || {})[objectName]
+            ?? (classEntry.fieldDeps || {})[objectName];
         if (typeName) {
           // 2a. Exact type match
           for (const funcId of candidates) {

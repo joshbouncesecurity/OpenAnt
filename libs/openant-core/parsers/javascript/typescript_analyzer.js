@@ -55,7 +55,7 @@ class TypeScriptAnalyzer {
       compilerOptions: PERMISSIVE_COMPILER_OPTIONS,
     });
     this.functions = {}; // functionId -> function metadata
-    this.classes = {};   // "filePath:className" -> { constructorDeps, baseTypes }
+    this.classes = {};   // "filePath:className" -> { constructorDeps, fieldDeps, baseTypes }
     this.callGraph = {}; // callerId -> array of call info
   }
 
@@ -269,6 +269,43 @@ class TypeScriptAnalyzer {
 
         if (Object.keys(injections).length > 0) classEntry.constructorDeps = injections;
       }
+
+      // Extract field/property injection metadata.
+      // Covers decorator-based (@Inject, @InjectRepository, etc.) and Angular's inject() function.
+      const fieldDeps = {};
+      for (const prop of classDecl.getProperties()) {
+        const propName = prop.getName();
+        let typeName = null;
+
+        // Decorator-based: any @Inject* decorator signals an injection point;
+        // the injected type comes from the TypeScript type annotation.
+        const hasInjectDecorator = prop.getDecorators().some(d => /^Inject/.test(d.getName()));
+        if (hasInjectDecorator) {
+          const typeNode = prop.getTypeNode();
+          if (typeNode) {
+            const t = typeNode.getText().replace(/<.*$/, '');
+            if (/^[A-Z][a-zA-Z0-9_$]*$/.test(t)) typeName = t;
+          }
+        }
+
+        // Functional: private svc = inject(SvcType)  (Angular inject() API)
+        if (!typeName) {
+          const init = prop.getInitializer();
+          if (init && init.getKindName() === 'CallExpression') {
+            const expr = init.getExpression();
+            if (expr && expr.getText() === 'inject') {
+              const args = init.getArguments();
+              if (args.length > 0) {
+                const t = args[0].getText().replace(/<.*$/, '');
+                if (/^[A-Z][a-zA-Z0-9_$]*$/.test(t)) typeName = t;
+              }
+            }
+          }
+        }
+
+        if (typeName) fieldDeps[propName] = typeName;
+      }
+      if (Object.keys(fieldDeps).length > 0) classEntry.fieldDeps = fieldDeps;
 
       if (Object.keys(classEntry).length > 0) {
         this.classes[`${relativePath}:${className}`] = classEntry;

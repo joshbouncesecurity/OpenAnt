@@ -444,6 +444,138 @@ export class ImplB implements IMyService {
         ), f"Should not resolve ambiguous implements, got: {resolver_calls}"
 
 
+class TestFieldDepsExtraction:
+    """Test that @Inject* decorators and inject() function are captured as fieldDeps."""
+
+    def test_extracts_inject_decorator(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.ts").write_text("""\
+import { Injectable, Inject } from '@nestjs/common';
+
+@Injectable()
+export class MyService {
+    @Inject('TOKEN')
+    private depService: DepService;
+
+    run() { return this.depService.execute(); }
+}
+""")
+        analyzer_out = tmp_path / "analyzer_output.json"
+        result = run_node(
+            "typescript_analyzer.js", str(tmp_path),
+            "src/service.ts",
+            "--output", str(analyzer_out),
+        )
+        assert result.returncode == 0
+        data = json.loads(analyzer_out.read_text())
+        field_deps = (find_class(data["classes"], "MyService") or {}).get("fieldDeps", {})
+        assert field_deps.get("depService") == "DepService"
+
+    def test_extracts_inject_repository_decorator(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.ts").write_text("""\
+import { Injectable } from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+
+@Injectable()
+export class UserService {
+    @InjectRepository(User)
+    private userRepo: Repository<User>;
+
+    findAll() { return this.userRepo.find(); }
+}
+""")
+        analyzer_out = tmp_path / "analyzer_output.json"
+        result = run_node(
+            "typescript_analyzer.js", str(tmp_path),
+            "src/service.ts",
+            "--output", str(analyzer_out),
+        )
+        assert result.returncode == 0
+        data = json.loads(analyzer_out.read_text())
+        field_deps = (find_class(data["classes"], "UserService") or {}).get("fieldDeps", {})
+        assert field_deps.get("userRepo") == "Repository"
+
+    def test_extracts_functional_inject(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "component.ts").write_text("""\
+import { inject } from '@angular/core';
+
+export class MyComponent {
+    private authService = inject(AuthService);
+
+    login() { return this.authService.signIn(); }
+}
+""")
+        analyzer_out = tmp_path / "analyzer_output.json"
+        result = run_node(
+            "typescript_analyzer.js", str(tmp_path),
+            "src/component.ts",
+            "--output", str(analyzer_out),
+        )
+        assert result.returncode == 0
+        data = json.loads(analyzer_out.read_text())
+        field_deps = (find_class(data["classes"], "MyComponent") or {}).get("fieldDeps", {})
+        assert field_deps.get("authService") == "AuthService"
+
+    def test_ignores_non_inject_decorator(self, tmp_path):
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.ts").write_text("""\
+export class MyService {
+    @Column()
+    private name: string;
+
+    getName() { return this.name; }
+}
+""")
+        analyzer_out = tmp_path / "analyzer_output.json"
+        result = run_node(
+            "typescript_analyzer.js", str(tmp_path),
+            "src/service.ts",
+            "--output", str(analyzer_out),
+        )
+        assert result.returncode == 0
+        data = json.loads(analyzer_out.read_text())
+        field_deps = (find_class(data["classes"], "MyService") or {}).get("fieldDeps", {})
+        assert "name" not in field_deps
+
+    def test_resolves_field_injection_calls(self, tmp_path):
+        """Calls via @Inject field deps resolve correctly through the full pipeline."""
+        src = tmp_path / "src"
+        src.mkdir()
+        (src / "service.ts").write_text("""\
+import { Injectable, Inject } from '@nestjs/common';
+
+@Injectable()
+export class MyService {
+    @Inject('TOKEN')
+    private depService: DepService;
+
+    run() { return this.depService.execute(); }
+}
+""")
+        (src / "dep_service.ts").write_text("""\
+export class DepService {
+    execute() { return 'done'; }
+}
+""")
+        data = analyze_and_resolve(tmp_path, [
+            "src/service.ts",
+            "src/dep_service.ts",
+        ])
+        call_graph = data["callGraph"]
+        service_calls = next(
+            (calls for fid, calls in call_graph.items() if "MyService.run" in fid), None
+        )
+        assert service_calls is not None, "MyService.run not in call graph"
+        assert any("DepService.execute" in c for c in service_calls), \
+            f"Expected DepService.execute via field injection, got: {service_calls}"
+
+
 class TestDIAwareCallResolution:
     """Test that the dependency resolver uses constructorDeps for DI resolution."""
 
