@@ -313,16 +313,14 @@ class PipelineTest:
         # regardless of processing_level (which may be "all").
         if result.get('success', False) and os.path.exists(self.analyzer_output_file):
             try:
-                with open(self.analyzer_output_file, 'r') as f:
-                    analyzer = json.load(f)
+                analyzer = read_json(self.analyzer_output_file)
                 call_graph_data = {
                     "functions": analyzer.get("functions", {}),
                     "call_graph": analyzer.get("call_graph", analyzer.get("callGraph", {})),
                     "reverse_call_graph": analyzer.get("reverse_call_graph", analyzer.get("reverseCallGraph", {})),
                 }
                 call_graph_file = os.path.join(self.output_dir, 'call_graph.json')
-                with open(call_graph_file, 'w') as f:
-                    json.dump(call_graph_data, f, indent=2)
+                write_json(call_graph_file, call_graph_data)
             except (OSError, json.JSONDecodeError, KeyError) as e:
                 print(f"Warning: could not write call_graph.json: {e}")
 

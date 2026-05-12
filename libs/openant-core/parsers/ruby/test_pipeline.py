@@ -186,8 +186,7 @@ class RubyPipelineTest:
 
             # Write call graph for post-LLM reachability re-filtering
             call_graph_file = os.path.join(self.output_dir, 'call_graph.json')
-            with open(call_graph_file, 'w') as f:
-                json.dump(graph_result, f, indent=2)
+            write_json(call_graph_file, graph_result)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 

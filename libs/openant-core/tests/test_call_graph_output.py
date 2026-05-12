@@ -43,8 +43,11 @@ def _node_available() -> bool:
     return bool(shutil.which("node")) and (PARSERS_DIR / "javascript" / "node_modules").exists()
 
 def _go_parser_available() -> bool:
-    binary = PARSERS_DIR / "go" / "go_parser" / "go_parser"
-    if not binary.exists() or binary.stat().st_size == 0:
+    go_dir = PARSERS_DIR / "go" / "go_parser"
+    # Check both Unix and Windows binary names.
+    candidates = [go_dir / "go_parser", go_dir / "go_parser.exe"]
+    binary = next((p for p in candidates if p.exists() and p.stat().st_size > 0), None)
+    if binary is None:
         return False
     import subprocess
     try:

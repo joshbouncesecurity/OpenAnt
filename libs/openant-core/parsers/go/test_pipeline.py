@@ -294,10 +294,8 @@ class GoPipelineTest:
             and self.dataset_file and os.path.exists(self.dataset_file)
         ):
             try:
-                with open(self.analyzer_output_file, 'r') as f:
-                    analyzer = json.load(f)
-                with open(self.dataset_file, 'r') as f:
-                    dataset_for_cg = json.load(f)
+                analyzer = read_json(self.analyzer_output_file)
+                dataset_for_cg = read_json(self.dataset_file)
 
                 raw_functions = analyzer.get("functions", {})
                 # Normalise to the camelCase shape EntryPointDetector expects.
@@ -329,12 +327,11 @@ class GoPipelineTest:
                         reverse_call_graph[unit_id] = direct_callers
 
                 call_graph_file = os.path.join(self.output_dir, 'call_graph.json')
-                with open(call_graph_file, 'w') as f:
-                    json.dump({
-                        "functions": normalized_functions,
-                        "call_graph": call_graph,
-                        "reverse_call_graph": reverse_call_graph,
-                    }, f, indent=2)
+                write_json(call_graph_file, {
+                    "functions": normalized_functions,
+                    "call_graph": call_graph,
+                    "reverse_call_graph": reverse_call_graph,
+                })
             except (OSError, json.JSONDecodeError, KeyError) as e:
                 print(f"Warning: could not write call_graph.json: {e}")
 
