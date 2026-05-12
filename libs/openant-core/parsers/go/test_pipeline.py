@@ -43,6 +43,39 @@ from enum import Enum
 from pathlib import Path
 from typing import Set
 
+# Add parent directories to path so utilities can be found when run as a subprocess
+_parser_dir = Path(__file__).parent
+_core_root = _parser_dir.parent.parent
+if str(_core_root) not in sys.path:
+    sys.path.insert(0, str(_core_root))
+
+from utilities.file_io import open_utf8, read_json, run_utf8, write_json
+
+
+def _stdout_supports_unicode() -> bool:
+    """Return True if sys.stdout can emit the symbols we use for status.
+
+    Returns False when stdout is piped or redirected (common in CI) and
+    the encoding cannot be determined — this degrades output to plain ASCII
+    rather than raising UnicodeEncodeError at runtime.
+    """
+    encoding = getattr(sys.stdout, "encoding", None)
+    if not encoding:
+        return False
+    try:
+        # Probe with the actual symbols we emit. This catches cp1252 and
+        # other limited code pages without us having to enumerate them.
+        "✓✗→".encode(encoding)
+        return True
+    except (UnicodeEncodeError, LookupError):
+        return False
+
+
+_UNICODE_OK = _stdout_supports_unicode()
+SYM_OK = "✓" if _UNICODE_OK else "OK"
+SYM_FAIL = "✗" if _UNICODE_OK else "FAIL"
+SYM_ARROW = "→" if _UNICODE_OK else "->"
+
 # Add parent directory to path for utilities import
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from utilities.context_enhancer import ContextEnhancer
@@ -115,11 +148,11 @@ class GoPipelineTest:
         if not os.path.exists(self.go_parser):
             print("Building Go parser...")
             go_parser_dir = os.path.join(self.parser_dir, 'go_parser')
-            result = subprocess.run(
+            result = run_utf8(
                 ['go', 'build', '-o', 'go_parser', '.'],
                 cwd=go_parser_dir,
                 capture_output=True,
-                text=True
+                text=True,
             )
             if result.returncode != 0:
                 print(f"Error building Go parser: {result.stderr}")
@@ -140,7 +173,7 @@ class GoPipelineTest:
         start_time = datetime.now()
 
         try:
-            result = subprocess.run(
+            result = run_utf8(
                 command,
                 capture_output=True,
                 text=True,
@@ -158,7 +191,7 @@ class GoPipelineTest:
             }
 
             if result.returncode == 0:
-                print(f"✓ Success ({elapsed:.2f}s)")
+                print(f"{SYM_OK} Success ({elapsed:.2f}s)")
                 print()
                 # Print stderr (often contains summary info)
                 if result.stderr:
@@ -168,11 +201,10 @@ class GoPipelineTest:
 
                 # Load and summarize output
                 if os.path.exists(output_file):
-                    with open(output_file, 'r') as f:
-                        data = json.load(f)
+                    data = read_json(output_file)
                     stage_result['summary'] = self._summarize_output(name, data)
             else:
-                print(f"✗ Failed (exit code {result.returncode})")
+                print(f"{SYM_FAIL} Failed (exit code {result.returncode})")
                 print()
                 if result.stderr:
                     print("STDERR:")
@@ -185,7 +217,7 @@ class GoPipelineTest:
 
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
-            print(f"✗ Error: {e}")
+            print(f"{SYM_FAIL} Error: {e}")
             return {
                 'success': False,
                 'elapsed_seconds': elapsed,
@@ -244,11 +276,9 @@ class GoPipelineTest:
         # Post-process: apply dataset name if specified (Go binary doesn't support --name)
         if result.get('success', False) and self.dataset_name and os.path.exists(self.dataset_file):
             try:
-                with open(self.dataset_file, 'r') as f:
-                    dataset = json.load(f)
+                dataset = read_json(self.dataset_file)
                 dataset['name'] = self.dataset_name
-                with open(self.dataset_file, 'w') as f:
-                    json.dump(dataset, f, indent=2)
+                write_json(self.dataset_file, dataset)
             except Exception as e:
                 print(f"Warning: Could not apply dataset name: {e}")
 
@@ -282,8 +312,7 @@ class GoPipelineTest:
 
         try:
             # Load analyzer output for call graph
-            with open(self.analyzer_output_file, 'r') as f:
-                analyzer = json.load(f)
+            analyzer = read_json(self.analyzer_output_file)
 
             functions = analyzer.get("functions", {})
 
@@ -304,8 +333,7 @@ class GoPipelineTest:
                 }
 
             # Load call graph from dataset (go_parser puts it in statistics)
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             # Build call graph from unit metadata
             call_graph = {}
@@ -359,8 +387,7 @@ class GoPipelineTest:
             }
 
             # Write filtered dataset
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -378,9 +405,9 @@ class GoPipelineTest:
                 'summary': summary
             }
 
-            print(f"✓ Success ({elapsed:.2f}s)")
+            print(f"{SYM_OK} Success ({elapsed:.2f}s)")
             print(f"  Entry points detected: {len(self.entry_points)}")
-            print(f"  Units: {original_count} → {len(filtered_units)} ({summary['reduction_percentage']}% reduction)")
+            print(f"  Units: {original_count} {SYM_ARROW} {len(filtered_units)} ({summary['reduction_percentage']}% reduction)")
             print()
 
             self.results['stages']['reachability_filter'] = result
@@ -388,7 +415,7 @@ class GoPipelineTest:
 
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
-            print(f"✗ Error: {e}")
+            print(f"{SYM_FAIL} Error: {e}")
             import traceback
             traceback.print_exc()
             result = {
@@ -434,7 +461,7 @@ class GoPipelineTest:
                 '--overwrite'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 create_db_cmd,
                 capture_output=True,
                 text=True,
@@ -442,7 +469,7 @@ class GoPipelineTest:
             )
 
             if result.returncode != 0:
-                print(f"✗ CodeQL database creation failed")
+                print(f"{SYM_FAIL} CodeQL database creation failed")
                 print(f"  stderr: {result.stderr[:500] if result.stderr else 'none'}")
                 elapsed = (datetime.now() - start_time).total_seconds()
                 self.results['stages']['codeql_analysis'] = {
@@ -465,7 +492,7 @@ class GoPipelineTest:
                 f'codeql/{language}-queries:codeql-suites/{language}-security-extended.qls'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 analyze_cmd,
                 capture_output=True,
                 text=True,
@@ -473,7 +500,7 @@ class GoPipelineTest:
             )
 
             if result.returncode != 0:
-                print(f"✗ CodeQL analysis failed")
+                print(f"{SYM_FAIL} CodeQL analysis failed")
                 print(f"  stderr: {result.stderr[:500] if result.stderr else 'none'}")
                 elapsed = (datetime.now() - start_time).total_seconds()
                 self.results['stages']['codeql_analysis'] = {
@@ -489,7 +516,7 @@ class GoPipelineTest:
             # Step 3: Parse SARIF output
             print("Parsing results...")
             if not os.path.exists(sarif_output):
-                print("✗ SARIF output not found")
+                print(f"{SYM_FAIL} SARIF output not found")
                 elapsed = (datetime.now() - start_time).total_seconds()
                 self.results['stages']['codeql_analysis'] = {
                     'success': False,
@@ -498,8 +525,7 @@ class GoPipelineTest:
                 }
                 return False
 
-            with open(sarif_output, 'r') as f:
-                sarif_data = json.load(f)
+            sarif_data = read_json(sarif_output)
 
             # Extract findings and map to file:line
             self.codeql_findings = []
@@ -550,7 +576,7 @@ class GoPipelineTest:
                 'summary': summary
             }
 
-            print(f"✓ Success ({elapsed:.2f}s)")
+            print(f"{SYM_OK} Success ({elapsed:.2f}s)")
             print(f"  Total findings: {len(self.codeql_findings)}")
             print(f"  Unique files: {summary['unique_files']}")
             if summary['by_level']:
@@ -562,7 +588,7 @@ class GoPipelineTest:
 
         except FileNotFoundError:
             elapsed = (datetime.now() - start_time).total_seconds()
-            print("✗ CodeQL not found. Please install CodeQL CLI.")
+            print(f"{SYM_FAIL} CodeQL not found. Please install CodeQL CLI.")
             print("  See: https://docs.github.com/en/code-security/codeql-cli")
             self.results['stages']['codeql_analysis'] = {
                 'success': False,
@@ -573,7 +599,7 @@ class GoPipelineTest:
 
         except subprocess.TimeoutExpired:
             elapsed = (datetime.now() - start_time).total_seconds()
-            print("✗ CodeQL analysis timed out")
+            print(f"{SYM_FAIL} CodeQL analysis timed out")
             self.results['stages']['codeql_analysis'] = {
                 'success': False,
                 'elapsed_seconds': elapsed,
@@ -583,7 +609,7 @@ class GoPipelineTest:
 
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
-            print(f"✗ Error: {e}")
+            print(f"{SYM_FAIL} Error: {e}")
             import traceback
             traceback.print_exc()
             self.results['stages']['codeql_analysis'] = {
@@ -620,8 +646,7 @@ class GoPipelineTest:
 
         try:
             # Load dataset to get function line ranges
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             # Build mapping of file -> [(start_line, end_line, func_id)]
             file_functions = {}
@@ -675,8 +700,7 @@ class GoPipelineTest:
             }
 
             # Write filtered dataset
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -695,10 +719,10 @@ class GoPipelineTest:
                 'summary': summary
             }
 
-            print(f"✓ Success ({elapsed:.2f}s)")
+            print(f"{SYM_OK} Success ({elapsed:.2f}s)")
             print(f"  CodeQL findings: {len(self.codeql_findings)}")
             print(f"  Flagged function units: {len(self.codeql_flagged_units)}")
-            print(f"  Units: {original_count} → {len(filtered_units)} ({summary['reduction_percentage']}% reduction)")
+            print(f"  Units: {original_count} {SYM_ARROW} {len(filtered_units)} ({summary['reduction_percentage']}% reduction)")
             print()
 
             self.results['stages']['codeql_filter'] = result
@@ -706,7 +730,7 @@ class GoPipelineTest:
 
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
-            print(f"✗ Error: {e}")
+            print(f"{SYM_FAIL} Error: {e}")
             import traceback
             traceback.print_exc()
             result = {
@@ -733,8 +757,7 @@ class GoPipelineTest:
 
         try:
             # Load dataset
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             # Enhance with LLM
             enhancer = ContextEnhancer()
@@ -771,8 +794,7 @@ class GoPipelineTest:
                 }
 
             # Write back
-            with open(self.dataset_file, 'w') as f:
-                json.dump(enhanced, f, indent=2)
+            write_json(self.dataset_file, enhanced)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -784,14 +806,14 @@ class GoPipelineTest:
             }
 
             print()
-            print(f"✓ Success ({elapsed:.2f}s)")
+            print(f"{SYM_OK} Success ({elapsed:.2f}s)")
 
             self.results['stages']['context_enhancer'] = result
             return True
 
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
-            print(f"✗ Error: {e}")
+            print(f"{SYM_FAIL} Error: {e}")
             import traceback
             traceback.print_exc()
             result = {
@@ -824,8 +846,7 @@ class GoPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             units = dataset.get("units", [])
             original_count = len(units)
@@ -854,8 +875,7 @@ class GoPipelineTest:
             }
 
             # Write filtered dataset
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -873,12 +893,12 @@ class GoPipelineTest:
                 'summary': summary
             }
 
-            print(f"✓ Success ({elapsed:.2f}s)")
+            print(f"{SYM_OK} Success ({elapsed:.2f}s)")
             print(f"  Classification breakdown:")
             for cls, count in sorted(classification_counts.items()):
-                marker = "→" if cls == "exploitable" else " "
+                marker = SYM_ARROW if cls == "exploitable" else " "
                 print(f"    {marker} {cls}: {count}")
-            print(f"  Units: {original_count} → {len(filtered_units)} ({summary['reduction_percentage']}% reduction)")
+            print(f"  Units: {original_count} {SYM_ARROW} {len(filtered_units)} ({summary['reduction_percentage']}% reduction)")
             print()
 
             self.results['stages']['exploitable_filter'] = result
@@ -886,7 +906,7 @@ class GoPipelineTest:
 
         except Exception as e:
             elapsed = (datetime.now() - start_time).total_seconds()
-            print(f"✗ Error: {e}")
+            print(f"{SYM_FAIL} Error: {e}")
             import traceback
             traceback.print_exc()
             result = {
@@ -966,13 +986,13 @@ class GoPipelineTest:
         self.results['success'] = all_success
 
         if all_success:
-            print("✓ All stages completed successfully")
+            print(f"{SYM_OK} All stages completed successfully")
         else:
-            print("✗ Some stages failed")
+            print(f"{SYM_FAIL} Some stages failed")
 
         print()
         for stage_name, stage_result in self.results['stages'].items():
-            status = "✓" if stage_result.get('success') else "✗"
+            status = SYM_OK if stage_result.get('success') else SYM_FAIL
             elapsed = stage_result.get('elapsed_seconds', 0)
             print(f"  {status} {stage_name}: {elapsed:.2f}s")
 
@@ -1002,7 +1022,7 @@ class GoPipelineTest:
 
         # Save results summary
         results_file = os.path.join(self.output_dir, 'pipeline_results.json')
-        with open(results_file, 'w') as f:
+        with open_utf8(results_file, 'w') as f:
             # Remove stdout/stderr from saved results (too verbose)
             clean_results = {
                 'repository': self.results['repository'],

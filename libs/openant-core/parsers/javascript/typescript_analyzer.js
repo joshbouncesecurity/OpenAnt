@@ -28,6 +28,7 @@
 const { Project } = require("ts-morph");
 const { ts } = require("@ts-morph/common");
 const path = require("path");
+const { toPosixPath } = require("./path_utils");
 
 /**
  * Maximally permissive compiler options for AST extraction.
@@ -50,7 +51,9 @@ const PERMISSIVE_COMPILER_OPTIONS = {
 
 class TypeScriptAnalyzer {
   constructor(repoPath) {
-    this.repoPath = repoPath;
+    // Normalise immediately so all later path operations (path.relative,
+    // path.join) work with a consistent forward-slash base on Windows.
+    this.repoPath = toPosixPath(path.resolve(repoPath));
     this.project = new Project({
       compilerOptions: PERMISSIVE_COMPILER_OPTIONS,
     });
@@ -136,10 +139,15 @@ class TypeScriptAnalyzer {
         ? filePath
         : path.join(this.repoPath, filePath);
 
+      // ts-morph treats backslashes as escape characters when matching
+      // paths it has already added. Normalise to forward slashes so
+      // Windows-native paths (with `\`) resolve consistently.
+      const normalised = toPosixPath(fullPath);
+
       try {
-        this.project.addSourceFileAtPath(fullPath);
+        this.project.addSourceFileAtPath(normalised);
       } catch (error) {
-        console.error(`Failed to add file ${fullPath}: ${error.message}`);
+        console.error(`Failed to add file ${normalised}: ${error.message}`);
       }
     }
 
@@ -163,7 +171,12 @@ class TypeScriptAnalyzer {
    * Extract all functions/methods from a source file
    */
   extractFunctionsFromFile(sourceFile) {
-    const relativePath = path.relative(this.repoPath, sourceFile.getFilePath());
+    // Always emit POSIX-style relative paths so functionId values are
+    // stable across platforms (Python downstream consumers and dataset
+    // diffs key off these strings).
+    const relativePath = toPosixPath(
+      path.relative(this.repoPath, sourceFile.getFilePath()),
+    );
 
     // Extract function declarations
     for (const func of sourceFile.getFunctions()) {
@@ -407,7 +420,9 @@ class TypeScriptAnalyzer {
    * For each function, find what other functions it calls
    */
   buildCallGraphForFile(sourceFile) {
-    const relativePath = path.relative(this.repoPath, sourceFile.getFilePath());
+    const relativePath = toPosixPath(
+      path.relative(this.repoPath, sourceFile.getFilePath()),
+    );
 
     // Analyze function declarations
     for (const func of sourceFile.getFunctions()) {
@@ -488,9 +503,13 @@ class TypeScriptAnalyzer {
 function extractSingleFunction(filePath, functionRef) {
   const fs = require("fs");
 
-  // Check if file exists
-  if (!fs.existsSync(filePath)) {
-    console.error(`File not found: ${filePath}`);
+  // Normalise to forward slashes so ts-morph can match the path it stores
+  // internally. On Windows, filePath may arrive with backslashes.
+  const normalisedFilePath = toPosixPath(path.resolve(filePath));
+
+  // Check if file exists using the normalised path for consistent error messages.
+  if (!fs.existsSync(normalisedFilePath)) {
+    console.error(`File not found: ${normalisedFilePath}`);
     process.exit(1);
   }
 
@@ -499,7 +518,7 @@ function extractSingleFunction(filePath, functionRef) {
   });
 
   try {
-    const sourceFile = project.addSourceFileAtPath(filePath);
+    const sourceFile = project.addSourceFileAtPath(normalisedFilePath);
 
     // Parse function reference (e.g., "sessionHandler.handleLogin" or just "handleLogin")
     let className = null;
@@ -689,16 +708,21 @@ function extractSingleFunction(filePath, functionRef) {
               );
               if (requireMatch) {
                 const requiredPath = requireMatch[1];
-                // Resolve the path relative to current file
-                const currentDir = path.dirname(filePath);
-                let resolvedPath = path.resolve(currentDir, requiredPath);
+                // Resolve the path relative to current file; use the
+                // already-normalised path to avoid mixed separators.
+                const currentDir = path.dirname(normalisedFilePath);
+                let resolvedPath = toPosixPath(
+                  path.resolve(currentDir, requiredPath),
+                );
 
                 // Try with .js extension if not present
                 if (!fs.existsSync(resolvedPath)) {
                   resolvedPath = resolvedPath + ".js";
                 }
                 if (!fs.existsSync(resolvedPath)) {
-                  resolvedPath = path.resolve(currentDir, requiredPath + ".ts");
+                  resolvedPath = toPosixPath(
+                    path.resolve(currentDir, requiredPath + ".ts"),
+                  );
                 }
 
                 if (fs.existsSync(resolvedPath)) {
@@ -889,9 +913,14 @@ if (require.main === module) {
             process.exit(1);
           }
           const content = fs.readFileSync(listFile, "utf-8");
+          // Split on either CRLF or LF and trim residual whitespace so
+          // file lists written on Windows (with \r\n line endings) don't
+          // leave a trailing \r on each path, which would make
+          // addSourceFileAtPath fail.
           filePaths = content
-            .split("\n")
-            .filter((line) => line.trim().length > 0);
+            .split(/\r?\n/)
+            .map((line) => line.trim())
+            .filter((line) => line.length > 0);
           console.error(`Loaded ${filePaths.length} files from ${listFile}`);
           i += 2;
         } else if (args[i] === "--output" && i + 1 < args.length) {

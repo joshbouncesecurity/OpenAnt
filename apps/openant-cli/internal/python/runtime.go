@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 )
@@ -40,7 +41,11 @@ func venvDir() string {
 
 // venvPython returns the path to the Python binary inside the managed venv.
 func venvPython() string {
-	return filepath.Join(venvDir(), "bin", "python")
+	base := venvDir()
+	if runtime.GOOS == "windows" {
+		return filepath.Join(base, "Scripts", "python.exe")
+	}
+	return filepath.Join(base, "bin", "python")
 }
 
 // DetectRuntime finds a suitable Python 3.11+ installation.
@@ -51,10 +56,9 @@ func venvPython() string {
 //  2. Managed venv at ~/.openant/venv/ (if it exists and is valid)
 //  3. python3 / python on PATH
 //
-// Note: the managed-venv path (strategy 2) uses "bin/python" which is correct
-// on Linux/macOS. On Windows the venv layout uses "Scripts\python.exe"; users
-// on Windows who rely on the managed venv should set OPENANT_PYTHON explicitly
-// to point at the desired interpreter.
+// The managed-venv path (strategy 2) automatically detects the correct Python
+// binary location based on the OS: "bin/python" on Unix-like systems, or
+// "Scripts/python.exe" on Windows.
 func DetectRuntime() (*RuntimeInfo, error) {
 	// Strategy 0: honour explicit override via OPENANT_PYTHON env var.
 	// If the override is set but unusable, warn and fall through rather than

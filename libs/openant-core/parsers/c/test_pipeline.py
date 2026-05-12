@@ -42,6 +42,7 @@ from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import Set
+from utilities.file_io import open_utf8, read_json, run_utf8, write_json
 
 # Add parent directory to path for utilities import
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -139,8 +140,7 @@ class CPipelineTest:
 
             # Save scan results
             self.scan_results_file = os.path.join(self.output_dir, 'scan_results.json')
-            with open(self.scan_results_file, 'w') as f:
-                json.dump(scan_result, f, indent=2)
+            write_json(self.scan_results_file, scan_result)
 
             # Stage 2: Extract functions
             print("  [2/4] Extracting functions via tree-sitter...")
@@ -178,13 +178,11 @@ class CPipelineTest:
             print(f"         Avg upstream deps: {dataset['statistics']['avg_upstream']}")
 
             # Write dataset
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             # Write analyzer output
             analyzer_output = generator.generate_analyzer_output()
-            with open(self.analyzer_output_file, 'w') as f:
-                json.dump(analyzer_output, f, indent=2)
+            write_json(self.analyzer_output_file, analyzer_output)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -242,8 +240,7 @@ class CPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.analyzer_output_file, 'r') as f:
-                analyzer = json.load(f)
+            analyzer = read_json(self.analyzer_output_file)
 
             functions = analyzer.get("functions", {})
 
@@ -262,8 +259,7 @@ class CPipelineTest:
                 }
 
             # Build call graph from dataset unit metadata
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             call_graph = {}
             reverse_call_graph = {}
@@ -313,8 +309,7 @@ class CPipelineTest:
                 "reduction_percentage": round((1 - len(filtered_units) / original_count) * 100, 1) if original_count > 0 else 0
             }
 
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -379,7 +374,7 @@ class CPipelineTest:
                 '--overwrite'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 create_db_cmd,
                 capture_output=True,
                 text=True,
@@ -410,7 +405,7 @@ class CPipelineTest:
                 f'codeql/{language}-queries:codeql-suites/{language}-security-extended.qls'
             ]
 
-            result = subprocess.run(
+            result = run_utf8(
                 analyze_cmd,
                 capture_output=True,
                 text=True,
@@ -443,8 +438,7 @@ class CPipelineTest:
                 }
                 return False
 
-            with open(sarif_output, 'r') as f:
-                sarif_data = json.load(f)
+            sarif_data = read_json(sarif_output)
 
             self.codeql_findings = []
 
@@ -555,8 +549,7 @@ class CPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             # Build mapping of file -> [(start_line, end_line, func_id)]
             file_functions = {}
@@ -605,8 +598,7 @@ class CPipelineTest:
                 "reduction_percentage": round((1 - len(filtered_units) / original_count) * 100, 1) if original_count > 0 else 0
             }
 
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -662,8 +654,7 @@ class CPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             enhancer = ContextEnhancer()
 
@@ -695,8 +686,7 @@ class CPipelineTest:
                     'data_flows_extracted': enhancer.stats['data_flows_extracted']
                 }
 
-            with open(self.dataset_file, 'w') as f:
-                json.dump(enhanced, f, indent=2)
+            write_json(self.dataset_file, enhanced)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -740,8 +730,7 @@ class CPipelineTest:
         start_time = datetime.now()
 
         try:
-            with open(self.dataset_file, 'r') as f:
-                dataset = json.load(f)
+            dataset = read_json(self.dataset_file)
 
             units = dataset.get("units", [])
             original_count = len(units)
@@ -767,8 +756,7 @@ class CPipelineTest:
                 "reduction_percentage": round((1 - len(filtered_units) / original_count) * 100, 1) if original_count > 0 else 0
             }
 
-            with open(self.dataset_file, 'w') as f:
-                json.dump(dataset, f, indent=2)
+            write_json(self.dataset_file, dataset)
 
             elapsed = (datetime.now() - start_time).total_seconds()
 
@@ -908,7 +896,7 @@ class CPipelineTest:
 
         # Save results summary
         results_file = os.path.join(self.output_dir, 'pipeline_results.json')
-        with open(results_file, 'w') as f:
+        with open_utf8(results_file, 'w') as f:
             clean_results = {
                 'repository': self.results['repository'],
                 'test_time': self.results['test_time'],

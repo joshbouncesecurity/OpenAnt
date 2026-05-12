@@ -34,10 +34,31 @@ var (
 func init() {
 	parseCmd.Flags().StringVarP(&parseOutput, "output", "o", "", "Output directory (default: project scan dir)")
 	parseCmd.Flags().StringVarP(&parseLanguage, "language", "l", "", "Language: python, javascript, go, c, ruby, php, auto")
-	parseCmd.Flags().StringVar(&parseLevel, "level", "all", "Processing level: all, reachable, codeql, exploitable")
+	parseCmd.Flags().StringVar(&parseLevel, "level", "reachable", "Processing level: all, reachable, codeql, exploitable")
 	parseCmd.Flags().StringVar(&parseDiffBase, "diff-base", "", "Incremental mode: tag units overlapping diff vs this ref")
 	parseCmd.Flags().IntVar(&parsePR, "pr", 0, "Incremental mode against a GitHub PR number (mutex with --diff-base)")
 	parseCmd.Flags().StringVar(&parseDiffScope, "diff-scope", "changed_functions", "Diff scope: changed_files, changed_functions, callers")
+}
+
+// buildParsePyArgs assembles the argv passed to the Python `openant parse`
+// subprocess. Defaults that match the Python CLI (language=auto,
+// level=reachable) are omitted so the Python side stays in charge of the
+// canonical default value.
+func buildParsePyArgs(repoPath, output, datasetName, language, level, manifestPath string) []string {
+	pyArgs := []string{"parse", repoPath, "--output", output}
+	if datasetName != "" {
+		pyArgs = append(pyArgs, "--name", datasetName)
+	}
+	if language != "auto" {
+		pyArgs = append(pyArgs, "--language", language)
+	}
+	if level != "reachable" {
+		pyArgs = append(pyArgs, "--level", level)
+	}
+	if manifestPath != "" {
+		pyArgs = append(pyArgs, "--diff-manifest", manifestPath)
+	}
+	return pyArgs
 }
 
 func runParse(cmd *cobra.Command, args []string) {
@@ -92,19 +113,7 @@ func runParse(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	pyArgs := []string{"parse", repoPath, "--output", parseOutput}
-	if datasetName != "" {
-		pyArgs = append(pyArgs, "--name", datasetName)
-	}
-	if parseLanguage != "auto" {
-		pyArgs = append(pyArgs, "--language", parseLanguage)
-	}
-	if parseLevel != "all" {
-		pyArgs = append(pyArgs, "--level", parseLevel)
-	}
-	if manifestPath != "" {
-		pyArgs = append(pyArgs, "--diff-manifest", manifestPath)
-	}
+	pyArgs := buildParsePyArgs(repoPath, parseOutput, datasetName, parseLanguage, parseLevel, manifestPath)
 
 	result, err := python.Invoke(rt.Path, pyArgs, "", quiet, resolvedAPIKey())
 	if err != nil {

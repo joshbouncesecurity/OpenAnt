@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.schemas import ReportResult
+from utilities.file_io import open_utf8, read_json, write_json
 
 # Root of openant-core
 _CORE_ROOT = Path(__file__).parent.parent
@@ -34,8 +35,7 @@ def _load_diff_metadata(scan_dir: str) -> dict | None:
     if not os.path.exists(manifest_path):
         return None
     try:
-        with open(manifest_path) as f:
-            manifest = json.load(f)
+        manifest = read_json(manifest_path)
     except (json.JSONDecodeError, OSError):
         return None
     out = {
@@ -50,8 +50,7 @@ def _load_diff_metadata(scan_dir: str) -> dict | None:
     filter_report = os.path.join(scan_dir, "diff_filter.report.json")
     if os.path.exists(filter_report):
         try:
-            with open(filter_report) as f:
-                stats = json.load(f)
+            stats = read_json(filter_report)
             out["units_in_diff"] = stats.get("selected")
             out["units_total_parsed"] = stats.get("total")
             out["callers_added"] = stats.get("callers_added") or 0
@@ -129,8 +128,7 @@ def _dedup_caller_callee(
         return confirmed
 
     try:
-        with open(call_graph_path) as f:
-            cg_data = json.load(f)
+        cg_data = read_json(call_graph_path)
     except (json.JSONDecodeError, OSError):
         return confirmed
 
@@ -212,9 +210,7 @@ def build_pipeline_output(
     """
     print(f"[Report] Building pipeline_output.json...", file=sys.stderr)
 
-    with open(results_path) as f:
-        experiment = json.load(f)
-
+    experiment = read_json(results_path)
     all_results = experiment.get("results", [])
     code_by_route = experiment.get("code_by_route", {})
     metrics = experiment.get("metrics", {})
@@ -371,9 +367,7 @@ def build_pipeline_output(
         print(_banner, file=sys.stderr)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(pipeline_output, f, indent=2, ensure_ascii=False)
-
+    write_json(output_path, pipeline_output, ensure_ascii=False)
     print(f"  pipeline_output.json: {len(findings_data)} findings", file=sys.stderr)
     print(f"  Written to {output_path}", file=sys.stderr)
 
@@ -469,9 +463,7 @@ def generate_summary_report(
 
     print("[Report] Generating summary report (LLM)...", file=sys.stderr)
 
-    with open(results_path) as f:
-        pipeline_data = json.load(f)
-
+    pipeline_data = read_json(results_path)
     # Merge dynamic test results if available
     pipeline_data = merge_dynamic_results(pipeline_data, results_path)
 
@@ -483,7 +475,7 @@ def generate_summary_report(
     report_text, usage = _generate_summary(pipeline_data)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    with open(output_path, "w") as f:
+    with open_utf8(output_path, "w") as f:
         f.write(report_text)
 
     print(f"  Summary report: {output_path}", file=sys.stderr)
@@ -517,9 +509,7 @@ def generate_disclosure_docs(
 
     print("[Report] Generating disclosure documents (LLM)...", file=sys.stderr)
 
-    with open(results_path) as f:
-        pipeline_data = json.load(f)
-
+    pipeline_data = read_json(results_path)
     # Merge dynamic test results if available
     pipeline_data = merge_dynamic_results(pipeline_data, results_path)
 
@@ -552,7 +542,7 @@ def generate_disclosure_docs(
             safe_name = finding["short_name"].replace(" ", "_").upper()
             filename = f"DISCLOSURE_{i:02d}_{safe_name}.md"
             filepath = os.path.join(output_dir, filename)
-            with open(filepath, "w") as f:
+            with open_utf8(filepath, "w") as f:
                 f.write(disclosure_text)
             return finding["short_name"], filepath, usage
 

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"bytes"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -123,13 +124,16 @@ func TestSelectModeNoFlagsNoBaselineGoesFull(t *testing.T) {
 	}
 }
 
-// Reuse helper from scan_meta_test.go's withTempHome. The cmd package
-// can't import _test.go files from another package, so we redeclare a
-// minimal copy here.
+// Helper to set up a temporary home directory for tests.
+// On Unix: sets HOME. On Windows: sets USERPROFILE.
 func withTempHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	t.Setenv("HOME", dir)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", dir)
+	} else {
+		t.Setenv("HOME", dir)
+	}
 	return dir
 }
 
