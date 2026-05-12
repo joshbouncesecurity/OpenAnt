@@ -16,6 +16,7 @@ import sys
 from pathlib import Path
 
 from core.schemas import ParseResult
+from utilities.file_io import read_json, write_json
 
 # Root of openant-core (where parsers/ lives)
 _CORE_ROOT = Path(__file__).parent.parent
@@ -161,9 +162,7 @@ def _maybe_apply_diff_filter(
         )
         return
 
-    with open(result.dataset_path, "r") as f:
-        dataset = json.load(f)
-
+    dataset = read_json(result.dataset_path)
     # Dataset may be a dict with "units" or a raw list.
     if isinstance(dataset, dict):
         units = dataset.get("units", [])
@@ -172,14 +171,11 @@ def _maybe_apply_diff_filter(
 
     stats = apply_diff_filter(units, manifest)
 
-    with open(result.dataset_path, "w") as f:
-        json.dump(dataset, f, indent=2)
-
+    write_json(result.dataset_path, dataset)
     # Expose stats on the ParseResult via a side-channel file; the parse
     # step_context reads this when assembling parse.report.json.
     diff_report_path = os.path.join(output_dir, "diff_filter.report.json")
-    with open(diff_report_path, "w") as f:
-        json.dump(stats.to_dict(), f, indent=2)
+    write_json(diff_report_path, stats.to_dict())
 
     print(
         f"  Diff filter ({stats.scope}): {stats.selected}/{stats.total} units selected"
@@ -245,9 +241,7 @@ def _apply_reachability_filter(
 
     print(f"\n[Reachability Filter] Filtering to {processing_level} units...", file=sys.stderr)
 
-    with open(call_graph_path, "r") as f:
-        call_graph_data = json.load(f)
-
+    call_graph_data = read_json(call_graph_path)
     functions = call_graph_data.get("functions", {})
     call_graph = call_graph_data.get("call_graph", {})
     reverse_call_graph = call_graph_data.get("reverse_call_graph", {})
@@ -352,12 +346,8 @@ def _parse_python(repo_path: str, output_dir: str, processing_level: str, skip_t
         dataset = _apply_reachability_filter(dataset, output_dir, processing_level)
 
     # Write outputs
-    with open(dataset_path, "w") as f:
-        json.dump(dataset, f, indent=2)
-
-    with open(analyzer_output_path, "w") as f:
-        json.dump(analyzer_output, f, indent=2)
-
+    write_json(dataset_path, dataset)
+    write_json(analyzer_output_path, analyzer_output)
     units_count = len(dataset.get("units", []))
     print(f"  Python parser complete: {units_count} units", file=sys.stderr)
 
@@ -413,8 +403,7 @@ def _parse_javascript(repo_path: str, output_dir: str, processing_level: str, sk
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  JavaScript parser complete: {units_count} units", file=sys.stderr)
@@ -470,8 +459,7 @@ def _parse_go(repo_path: str, output_dir: str, processing_level: str, skip_tests
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  Go parser complete: {units_count} units", file=sys.stderr)
@@ -530,8 +518,7 @@ def _parse_c(repo_path: str, output_dir: str, processing_level: str, skip_tests:
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  C/C++ parser complete: {units_count} units", file=sys.stderr)
@@ -590,8 +577,7 @@ def _parse_ruby(repo_path: str, output_dir: str, processing_level: str, skip_tes
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  Ruby parser complete: {units_count} units", file=sys.stderr)
@@ -650,8 +636,7 @@ def _parse_php(repo_path: str, output_dir: str, processing_level: str, skip_test
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  PHP parser complete: {units_count} units", file=sys.stderr)
@@ -710,8 +695,7 @@ def _parse_zig(repo_path: str, output_dir: str, processing_level: str, skip_test
     # Count units
     units_count = 0
     if os.path.exists(dataset_path):
-        with open(dataset_path) as f:
-            data = json.load(f)
+        data = read_json(dataset_path)
         units_count = len(data.get("units", []))
 
     print(f"  Zig parser complete: {units_count} units", file=sys.stderr)

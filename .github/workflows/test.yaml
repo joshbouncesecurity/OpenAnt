@@ -5,6 +5,25 @@ on:
   pull_request:
 
 jobs:
+  lint:
+    name: Lint (Python)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint Python (undefined names, syntax errors)
+        working-directory: libs/openant-core
+        run: ruff check .
+
   python-tests:
     name: Python tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -51,7 +70,7 @@ jobs:
 
       - name: Run Python and parser tests
         working-directory: libs/openant-core
-        run: python -m pytest tests/test_token_tracker.py tests/test_parser_adapter.py tests/test_python_parser.py tests/test_js_parser.py -v
+        run: python -m pytest tests/ -v
 
   go-tests:
     name: Go build + integration (${{ matrix.os }})
@@ -92,6 +111,10 @@ jobs:
       - name: Vet
         working-directory: apps/openant-cli
         run: go vet ./...
+
+      - name: Run Go unit tests
+        working-directory: apps/openant-cli
+        run: go test ./... -v
 
       - name: Build (Linux/macOS)
         if: runner.os != 'Windows'

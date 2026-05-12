@@ -27,6 +27,7 @@ from core.progress import ProgressReporter
 
 # Import existing analysis machinery
 from utilities.llm_client import AnthropicClient, get_global_tracker
+from utilities.file_io import read_json, write_json
 from utilities.json_corrector import JSONCorrector
 from utilities.rate_limiter import get_rate_limiter, is_rate_limit_error, is_retryable_error
 
@@ -330,9 +331,7 @@ def run_analysis(
 
     # Load dataset
     print(f"[Analyze] Loading dataset: {dataset_path}", file=sys.stderr)
-    with open(dataset_path) as f:
-        dataset = json.load(f)
-
+    dataset = read_json(dataset_path)
     units = dataset.get("units", [])
 
     # Diff filter: if upstream parse stamped diff_selected on units (PR-diff
@@ -390,7 +389,7 @@ def run_analysis(
 
     # Inject prior usage into tracker so step_report captures the total
     if _summary_input_tokens or _summary_output_tokens:
-        tracker.add_prior_usage(
+        get_global_tracker().add_prior_usage(
             _summary_input_tokens, _summary_output_tokens, _summary_cost_usd)
 
     # Write initial summary
@@ -513,9 +512,7 @@ def run_analysis(
         "code_by_route": code_by_route,
     }
 
-    with open(results_path, "w") as f:
-        json.dump(experiment_result, f, indent=2)
-
+    write_json(results_path, experiment_result)
     print(f"\n[Analyze] Results written to {results_path}", file=sys.stderr)
 
     # Checkpoints are preserved as a permanent artifact alongside results.

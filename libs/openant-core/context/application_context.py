@@ -31,6 +31,7 @@ from typing import Any
 
 from anthropic import Anthropic
 from dotenv import load_dotenv
+from utilities.file_io import open_utf8, read_json, write_json
 
 # Load environment variables
 load_dotenv()
@@ -208,7 +209,8 @@ def gather_context_sources(repo_path: Path) -> dict[str, str]:
         filepath = repo_path / filename
         if filepath.exists():
             try:
-                content = filepath.read_text(errors="ignore")
+                with open_utf8(filepath, errors="ignore") as _f:
+                    content = _f.read()
                 # Limit size to avoid token overflow
                 if len(content) > 10000:
                     content = content[:10000] + "\n\n[... truncated ...]"
@@ -289,7 +291,8 @@ def detect_entry_points(repo_path: Path) -> str:
             continue
 
         try:
-            content = py_file.read_text(errors="ignore")
+            with open_utf8(py_file, errors="ignore") as _f:
+                content = _f.read()
             rel_path = py_file.relative_to(repo_path)
 
             for category, patterns in ENTRY_POINT_PATTERNS.items():
@@ -308,7 +311,8 @@ def detect_entry_points(repo_path: Path) -> str:
             continue
 
         try:
-            content = js_file.read_text(errors="ignore")
+            with open_utf8(js_file, errors="ignore") as _f:
+                content = _f.read()
             rel_path = js_file.relative_to(repo_path)
 
             if re.search(r"express\(\)|require\(['\"]express['\"]\)", content):
@@ -340,15 +344,17 @@ def check_manual_override(repo_path: Path) -> ApplicationContext | None:
             continue
 
         try:
-            content = filepath.read_text()
-
             if filename.endswith('.json'):
                 # Direct JSON format
-                data = json.loads(content)
+                data = read_json(filepath)
                 data['source'] = 'manual'
                 return ApplicationContext(**data)
 
-            elif filename.endswith('.md'):
+            # .md files need raw text so regex can extract the embedded JSON block.
+            with open_utf8(filepath) as _f:
+                content = _f.read()
+
+            if filename.endswith('.md'):
                 # Markdown format - check for JSON code block
                 json_match = re.search(r'```json\s*(.*?)\s*```', content, re.DOTALL)
                 if json_match:
@@ -545,8 +551,7 @@ def save_context(context: ApplicationContext, output_path: Path) -> None:
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with open(output_path, 'w') as f:
-        json.dump(asdict(context), f, indent=2)
+    write_json(output_path, asdict(context))
 
     print(f"Context saved to {output_path}", file=sys.stderr)
 
@@ -560,9 +565,7 @@ def load_context(input_path: Path) -> ApplicationContext:
     Returns:
         ApplicationContext loaded from file.
     """
-    with open(input_path) as f:
-        data = json.load(f)
-
+    data = read_json(input_path)
     # Mark as manual to skip validation (already validated when saved)
     original_source = data.get('source', 'llm')
     data['source'] = 'manual'  # Temporarily bypass validation
