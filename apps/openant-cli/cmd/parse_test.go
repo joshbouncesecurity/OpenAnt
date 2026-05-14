@@ -79,7 +79,7 @@ func TestBuildParsePyArgsBaseline(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// --fresh flag registration
+// --fresh flag
 // ---------------------------------------------------------------------------
 
 func TestParseCmdHasFreshFlag(t *testing.T) {

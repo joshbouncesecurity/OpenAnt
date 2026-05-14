@@ -147,3 +147,33 @@ class TestParseFreshFlag:
 
         assert output_dir.exists()
         assert Path(result.dataset_path).exists()
+
+    def test_fresh_and_diff_manifest_compose_correctly(
+        self, tmp_path, monkeypatch
+    ):
+        """--fresh cleans up before the parser runs even when --diff-manifest is also set."""
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        existing = output_dir / "dataset.json"
+        existing.write_text(json.dumps({"units": [{"id": "stale"}]}))
+
+        record = {}
+        monkeypatch.setattr(parser_adapter, "_parse_python", _make_stub_parser(record))
+        # Stub the diff filter so the test doesn't need a real manifest format.
+        monkeypatch.setattr(parser_adapter, "_maybe_apply_diff_filter", lambda *a, **kw: None)
+
+        manifest_path = tmp_path / "diff_manifest.json"
+        manifest_path.write_text(json.dumps({}))
+
+        parser_adapter.parse_repository(
+            repo_path=str(tmp_path),
+            output_dir=str(output_dir),
+            language="python",
+            processing_level="all",
+            fresh=True,
+            diff_manifest=str(manifest_path),
+        )
+
+        # --fresh must delete dataset.json before the parser runs even when
+        # --diff-manifest is also provided; the two flags must not interfere.
+        assert record["dataset_existed_when_parser_ran"] is False
