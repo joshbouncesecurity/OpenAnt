@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from core.schemas import ReportResult
+from utilities.atomic_io import atomic_write_json
 from utilities.file_io import open_utf8, read_json, write_json
 
 # Root of openant-core
@@ -367,7 +368,7 @@ def build_pipeline_output(
         print(_banner, file=sys.stderr)
 
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    write_json(output_path, pipeline_output, ensure_ascii=False)
+    atomic_write_json(output_path, pipeline_output, ensure_ascii=False)
     print(f"  pipeline_output.json: {len(findings_data)} findings", file=sys.stderr)
     print(f"  Written to {output_path}", file=sys.stderr)
 

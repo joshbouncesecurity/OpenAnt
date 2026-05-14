@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 from utilities.llm_client import AnthropicClient, get_global_tracker
+from utilities.atomic_io import atomic_write_json
 from utilities.file_io import read_json, write_json
 from prompts.prompt_selector import get_analysis_prompt
 from prompts.vulnerability_analysis import get_system_prompt as get_stage1_system_prompt
@@ -1033,7 +1034,7 @@ def main():
         suffix = "" if args.no_enhanced else "_enhanced"
         output_path = f"experiment_{args.dataset}_{args.model}{suffix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
 
-    write_json(output_path, experiment)
+    atomic_write_json(output_path, experiment)
     print()
     print(f"Results saved to: {output_path}")
 

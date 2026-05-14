@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 
 from core.schemas import ParseResult
+from utilities.atomic_io import atomic_write_json
 from utilities.file_io import open_utf8, read_json, write_json
 
 # Root of openant-core (where parsers/ lives)
@@ -173,7 +174,7 @@ def _maybe_apply_diff_filter(
 
     stats = apply_diff_filter(units, manifest)
 
-    write_json(result.dataset_path, dataset)
+    atomic_write_json(result.dataset_path, dataset)
     # Expose stats on the ParseResult via a side-channel file; the parse
     # step_context reads this when assembling parse.report.json.
     diff_report_path = os.path.join(output_dir, "diff_filter.report.json")
@@ -363,8 +364,8 @@ def _parse_python(repo_path: str, output_dir: str, processing_level: str, skip_t
         dataset = _apply_reachability_filter(dataset, output_dir, processing_level)
 
     # Write outputs
-    write_json(dataset_path, dataset)
-    write_json(analyzer_output_path, analyzer_output)
+    atomic_write_json(dataset_path, dataset)
+    atomic_write_json(analyzer_output_path, analyzer_output)
     units_count = len(dataset.get("units", []))
     print(f"  Python parser complete: {units_count} units", file=sys.stderr)
 
