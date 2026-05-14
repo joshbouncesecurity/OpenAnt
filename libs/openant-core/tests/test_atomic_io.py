@@ -160,3 +160,25 @@ def test_overwrites_existing_file(tmp_path: Path):
     assert json.loads(target.read_text(encoding="utf-8")) == {
         "version": 2, "extra": [1, 2, 3],
     }
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX permission semantics")
+def test_posix_permissions_match_umask(tmp_path: Path):
+    """The written file honours the process umask, not mkstemp's 0600 default.
+
+    A regression here is silent: pipeline outputs that other users / tools
+    were previously able to read (under a typical 0022 umask -> 0644 file)
+    would suddenly become owner-only. We don't want atomic writes to tighten
+    permissions as a side effect.
+    """
+    target = tmp_path / "results.json"
+
+    old_umask = os.umask(0o022)
+    try:
+        atomic_write_json(str(target), {"ok": True})
+    finally:
+        os.umask(old_umask)
+
+    mode = os.stat(target).st_mode & 0o777
+    # 0666 & ~0022 == 0644
+    assert mode == 0o644, f"expected 0644, got {oct(mode)}"

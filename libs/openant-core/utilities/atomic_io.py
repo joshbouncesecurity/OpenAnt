@@ -49,6 +49,20 @@ def atomic_write_json(path: str, data: Any, *, indent: int | None = 2,
         dir=directory,
     )
     try:
+        # tempfile.mkstemp creates files with mode 0600 (owner-only). A plain
+        # open(path, "w") honours the process umask (typically yielding 0644).
+        # Restore that behaviour so atomic writes don't silently tighten
+        # permissions on pipeline outputs that downstream tools/users read.
+        # On Windows os.chmod's effect is limited to the readonly bit, so
+        # this is effectively a no-op there.
+        if os.name == "posix":
+            try:
+                umask = os.umask(0)
+                os.umask(umask)
+                os.chmod(tmp_path, 0o666 & ~umask)
+            except OSError:
+                pass
+
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=indent, ensure_ascii=ensure_ascii)
             f.flush()
