@@ -20,6 +20,7 @@ from core.checkpoint import StepCheckpoint
 from core.progress import ProgressReporter
 
 from utilities.llm_client import TokenTracker, get_global_tracker
+from utilities.atomic_io import atomic_write_json
 from utilities.file_io import read_json, write_json
 from utilities.finding_verifier import FindingVerifier
 from utilities.agentic_enhancer.repository_index import load_index_from_file
@@ -267,7 +268,7 @@ def _write_verified_results(
 
     output["metrics"] = {"total": len(merged_results), **counts}
 
-    write_json(path, output, ensure_ascii=False)
+    atomic_write_json(path, output, ensure_ascii=False)
 def _build_code_by_route(results: list) -> dict:
     """Build code_by_route from result entries (fallback)."""
     code_by_route = {}

@@ -27,6 +27,7 @@ from core.progress import ProgressReporter
 
 # Import existing analysis machinery
 from utilities.llm_client import AnthropicClient, get_global_tracker
+from utilities.atomic_io import atomic_write_json
 from utilities.file_io import read_json, write_json
 from utilities.json_corrector import JSONCorrector
 from utilities.rate_limiter import get_rate_limiter, is_rate_limit_error, is_retryable_error
@@ -512,7 +513,7 @@ def run_analysis(
         "code_by_route": code_by_route,
     }
 
-    write_json(results_path, experiment_result)
+    atomic_write_json(results_path, experiment_result)
     print(f"\n[Analyze] Results written to {results_path}", file=sys.stderr)
 
     # Checkpoints are preserved as a permanent artifact alongside results.

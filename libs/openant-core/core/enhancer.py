@@ -17,6 +17,7 @@ from core.schemas import EnhanceResult, UsageInfo
 from core import tracking
 from core.progress import ProgressReporter
 from utilities.rate_limiter import configure_rate_limiter
+from utilities.atomic_io import atomic_write_json
 from utilities.file_io import read_json, write_json
 
 
@@ -137,7 +138,7 @@ def enhance_dataset(
 
     # Write enhanced dataset
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
-    write_json(output_path, enhanced)
+    atomic_write_json(output_path, enhanced)
     print(f"[Enhance] Enhanced dataset: {output_path}", file=sys.stderr)
     print(f"[Enhance] Classifications: {classifications}", file=sys.stderr)
     if error_count:
